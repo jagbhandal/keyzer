@@ -335,13 +335,14 @@ class Backend(QObject):
         if "_error" in d:
             return {"error": d["_error"], "devices": []}
         devs = [{"id": k, "name": v.get("name", k), "brightness": v.get("brightness", 100),
-                 "effects": v.get("effects", []), "error": v.get("_error")}
+                 "effects": v.get("effects", []), "zones": v.get("zones", []),
+                 "error": v.get("_error")}
                 for k, v in d.items()]
         return {"error": None, "devices": devs}
 
-    @Slot(str, str, int, int, int, result="QVariant")
-    def setLightEffect(self, dev: str, effect: str, r: int, g: int, b: int) -> dict:
-        return lighting.set_effect(dev, effect, (r, g, b))
+    @Slot(str, str, int, int, int, str, result="QVariant")
+    def setLightEffect(self, dev: str, effect: str, r: int, g: int, b: int, zone: str) -> dict:
+        return lighting.set_effect(dev, effect, (r, g, b), zone=zone)
 
     @Slot(str, int, result="QVariant")
     def setLightBrightness(self, dev: str, pct: int) -> dict:

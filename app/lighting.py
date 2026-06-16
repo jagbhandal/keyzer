@@ -24,6 +24,10 @@ TARGETS = {
 # Whole-device effects we expose; the UI shows only those a device actually has.
 EFFECTS = ["static", "spectrum", "breath_single", "breath_dual",
            "breath_random", "reactive", "wave", "none"]
+# The Naga Pro exposes independent lighting zones under device.fx.misc.<zone>.
+ZONES = ["logo", "scroll_wheel", "backlight", "left", "right"]
+_ZONE_LABELS = {"logo": "Logo", "scroll_wheel": "Scroll wheel",
+                "backlight": "Backlight", "left": "Left", "right": "Right"}
 
 
 def available() -> bool:
@@ -59,6 +63,30 @@ def _device(mgr, kid):
     return None
 
 
+def _zone_fx(dev, zone):
+    """Effects object for a zone, or the whole device when zone is empty."""
+    if not zone:
+        return dev.fx
+    misc = getattr(dev.fx, "misc", None)
+    return getattr(misc, zone, None) if misc is not None else None
+
+
+def _zones(dev) -> list:
+    """[{name,label,effects}] for the independently-controllable zones present."""
+    misc = getattr(dev.fx, "misc", None)
+    if misc is None:
+        return []
+    out = []
+    for z in ZONES:
+        led = getattr(misc, z, None)
+        if led is None:
+            continue
+        caps = [e for e in EFFECTS if led.has(e)]
+        if caps:
+            out.append({"name": z, "label": _ZONE_LABELS.get(z, z), "effects": caps})
+    return out
+
+
 def devices() -> dict:
     """{keyzer_id: {name, brightness, effects:[supported]}} for connected, lit
     devices; or {"_error": ...} if lighting isn't usable."""
@@ -68,8 +96,8 @@ def devices() -> dict:
     if err:
         return {"_error": err}
     out = {}
-    for kid, spec in TARGETS.items():
-        dev = _device(mgr, spec and kid)
+    for kid in TARGETS:
+        dev = _device(mgr, kid)
         if dev is None:
             continue
         try:
@@ -77,6 +105,7 @@ def devices() -> dict:
                 "name": dev.name,
                 "brightness": float(dev.brightness),
                 "effects": [e for e in EFFECTS if dev.fx.has(e)],
+                "zones": _zones(dev),
             }
         except Exception as exc:
             out[kid] = {"_error": str(exc)}
@@ -100,8 +129,8 @@ def set_brightness(kid: str, pct: float) -> dict:
 
 
 def set_effect(kid: str, effect: str, color=(68, 214, 44), color2=(34, 200, 255),
-               *, direction: str = "left", react_ms: int = 1000) -> dict:
-    """Apply a whole-device effect. color/color2 are (r,g,b) 0-255."""
+               *, direction: str = "left", react_ms: int = 1000, zone: str = "") -> dict:
+    """Apply an effect to the whole device (zone="") or one zone. color is (r,g,b)."""
     if not available():
         return {"ok": False, "error": "openrazer not installed"}
     mgr, err = _manager()
@@ -110,9 +139,11 @@ def set_effect(kid: str, effect: str, color=(68, 214, 44), color2=(34, 200, 255)
     dev = _device(mgr, kid)
     if dev is None:
         return {"ok": False, "error": "device not connected"}
-    fx = dev.fx
+    fx = _zone_fx(dev, zone)
+    if fx is None:
+        return {"ok": False, "error": f"{dev.name} has no '{zone}' zone"}
     if not fx.has(effect):
-        return {"ok": False, "error": f"{dev.name} can't do '{effect}'"}
+        return {"ok": False, "error": f"{dev.name} can't do '{effect}'" + (f" on {zone}" if zone else "")}
     try:
         from openrazer.client import constants as c
         r, g, b = (int(x) for x in color)

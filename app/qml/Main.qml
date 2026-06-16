@@ -891,16 +891,18 @@ Rectangle {
         function openDemo() {   // offscreen QA only
             panel = { error: null, devices: [
                 { id: "tartarus", name: "Razer Tartarus Pro", brightness: 80, effects: ["static", "reactive", "none"] },
-                { id: "naga", name: "Razer Naga Pro", brightness: 100, effects: ["static", "spectrum", "breath_single", "wave", "none"] } ] }
+                { id: "naga", name: "Razer Naga Pro", brightness: 100, effects: ["static", "spectrum", "breath_single", "wave", "none"],
+                  zones: [{ name: "logo", label: "Logo", effects: ["static", "spectrum", "breath_single", "none"] },
+                          { name: "scroll_wheel", label: "Scroll wheel", effects: ["static", "spectrum", "reactive", "none"] }] } ] }
             visible = true
         }
-        function applyColor(devId, sw) {
-            var r = backend.setLightEffect(devId, sw[0] === "Off" ? "none" : "static", sw[1], sw[2], sw[3])
-            showToast(r.ok ? (devId + " → " + sw[0]) : (r.error || "lighting failed"))
+        function applyColor(devId, sw, zone) {
+            var r = backend.setLightEffect(devId, sw[0] === "Off" ? "none" : "static", sw[1], sw[2], sw[3], zone)
+            showToast(r.ok ? (devId + (zone ? " " + zone : "") + " → " + sw[0]) : (r.error || "lighting failed"))
         }
-        function applyEffect(devId, eff) {
-            var r = backend.setLightEffect(devId, eff, 68, 214, 44)
-            showToast(r.ok ? (devId + " → " + eff) : (r.error || "lighting failed"))
+        function applyEffect(devId, eff, zone) {
+            var r = backend.setLightEffect(devId, eff, 68, 214, 44, zone)
+            showToast(r.ok ? (devId + (zone ? " " + zone : "") + " → " + eff) : (r.error || "lighting failed"))
         }
         function setBright(devId, pct) {
             var r = backend.setLightBrightness(devId, pct)
@@ -929,7 +931,14 @@ Rectangle {
                         id: devRow
                         property string devId: modelData.id
                         property real devBright: modelData.brightness
-                        property var devEffects: modelData.effects || []
+                        property var devZones: modelData.zones || []
+                        property string zone: ""
+                        property var curEffects: {
+                            if (zone === "") return modelData.effects || []
+                            for (var i = 0; i < devZones.length; i++)
+                                if (devZones[i].name === zone) return devZones[i].effects
+                            return []
+                        }
                         width: lCol.width; spacing: 8; topPadding: 4
                         Row {
                             spacing: 10
@@ -942,6 +951,21 @@ Rectangle {
                                 Text { anchors.centerIn: parent; text: "+"; color: root.txt; font.pixelSize: 14 }
                                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: lightingOverlay.setBright(devRow.devId, Math.min(100, devRow.devBright + 10)) } }
                         }
+                        Flow {   // zone selector (Naga exposes independent zones)
+                            visible: devRow.devZones.length > 0
+                            width: parent.width; spacing: 6
+                            Repeater {
+                                model: [{ name: "", label: "All" }].concat(devRow.devZones)
+                                Rectangle {
+                                    height: 24; width: zt.implicitWidth + 18; radius: 6
+                                    color: devRow.zone === modelData.name ? root.greenDim : root.panel2
+                                    border.width: 1; border.color: devRow.zone === modelData.name ? root.green : root.lineC
+                                    Text { id: zt; anchors.centerIn: parent; text: modelData.label; font.pixelSize: 11; font.bold: true
+                                        color: devRow.zone === modelData.name ? root.greenTxt : root.muted }
+                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: devRow.zone = modelData.name }
+                                }
+                            }
+                        }
                         Flow {
                             width: parent.width; spacing: 8
                             Repeater {
@@ -952,15 +976,15 @@ Rectangle {
                                     border.width: 1; border.color: swMa.containsMouse ? root.txt : root.line2
                                     Text { visible: modelData[0] === "Off"; anchors.centerIn: parent; text: "∅"; color: root.muted; font.pixelSize: 13 }
                                     MouseArea { id: swMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                        onClicked: lightingOverlay.applyColor(devRow.devId, modelData) }
+                                        onClicked: lightingOverlay.applyColor(devRow.devId, modelData, devRow.zone) }
                                 }
                             }
                         }
                         Flow {
                             width: parent.width; spacing: 6
                             Repeater {
-                                model: devRow.devEffects
-                                Chip { label: modelData; onPicked: lightingOverlay.applyEffect(devRow.devId, modelData) }
+                                model: devRow.curEffects
+                                Chip { label: modelData; onPicked: lightingOverlay.applyEffect(devRow.devId, modelData, devRow.zone) }
                             }
                         }
                     }

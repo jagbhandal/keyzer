@@ -23,6 +23,8 @@ Rectangle {
     readonly property color greenDim: "#2f9a1f"
     readonly property color cyan: "#22c8ff"
     readonly property color greenTxt: "#eafbe6"
+    readonly property color bg0: "#0c0c11"
+    readonly property color danger: "#d65c44"
 
     // ---------- ui state ----------
     property string curDev: "tartarus"
@@ -57,6 +59,7 @@ Rectangle {
     property var ov: ({})   // drag-align position overrides, keyed "dev|view|id"
     function ovKey(id) { return curDev + "|" + curView + "|" + id }
     function setCoord(id, nx, ny) { var m = ov; m[ovKey(id)] = { x: Math.round(nx), y: Math.round(ny) }; ov = m }
+    function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }   // theme color at alpha
 
     function applyBinding() {
         if (selKey === "") return
@@ -120,7 +123,7 @@ Rectangle {
             id: track
             width: 40; height: 22; radius: 11
             anchors.verticalCenter: parent.verticalCenter
-            color: sw.on ? sw.accent : "#2a2a35"
+            color: sw.on ? sw.accent : root.lineC
             border.width: 1; border.color: sw.on ? sw.accentBorder : root.line2
             Rectangle {
                 width: 16; height: 16; radius: 8; y: 2
@@ -158,8 +161,8 @@ Rectangle {
         Rectangle {
             id: hit
             anchors.fill: parent; radius: 9
-            color: hs.selected ? Qt.rgba(root.green.r, root.green.g, root.green.b, 0.12)
-                 : root.aligning ? Qt.rgba(root.cyan.r, root.cyan.g, root.cyan.b, 0.10)
+            color: hs.selected ? root.alpha(root.green, 0.12)
+                 : root.aligning ? root.alpha(root.cyan, 0.10)
                  : "transparent"
             border.width: (hs.selected || root.aligning || hov.hovered) ? 2 : 0
             border.color: hs.selected ? root.green
@@ -173,7 +176,7 @@ Rectangle {
             width: Math.max(26, pillTxt.implicitWidth + 14); height: 24; radius: 6
             color: Qt.rgba(0.03, 0.035, 0.024, 0.86)
             border.width: 1
-            border.color: hs.selected ? root.green : Qt.rgba(root.green.r, root.green.g, root.green.b, 0.45)
+            border.color: hs.selected ? root.green : root.alpha(root.green, 0.45)
             Text {
                 id: pillTxt; anchors.centerIn: parent
                 text: hs.binding !== "" ? hs.binding : (hs.selected ? "·" : "")
@@ -195,13 +198,12 @@ Rectangle {
 
     component RailDevice: Rectangle {
         id: rd
-        property string devId: ""
         property string devName: ""
         property string devType: ""
         property bool active: false
         signal chosen()
         height: 54; radius: 9
-        color: active ? Qt.rgba(root.green.r, root.green.g, root.green.b, 0.10)
+        color: active ? root.alpha(root.green, 0.10)
              : rdMa.containsMouse ? root.panelC : "transparent"
         border.width: 1; border.color: active ? root.greenDim : "transparent"
         Rectangle {
@@ -285,17 +287,17 @@ Rectangle {
         id: footer
         anchors { bottom: parent.bottom; left: parent.left; right: parent.right }
         height: 30
-        Rectangle { anchors.fill: parent; color: "#0c0c11" }
+        Rectangle { anchors.fill: parent; color: root.bg0 }
         Rectangle { anchors { left: parent.left; right: parent.right; top: parent.top }height: 1; color: root.lineC }
         Row {
             anchors { left: parent.left; leftMargin: 18; verticalCenter: parent.verticalCenter }
             spacing: 16
             Row {
                 spacing: 6; anchors.verticalCenter: parent.verticalCenter
-                Rectangle { width: 7; height: 7; radius: 4; color: backend.deps.inputRemapper ? root.green : "#d65c44"; anchors.verticalCenter: parent.verticalCenter }
+                Rectangle { width: 7; height: 7; radius: 4; color: backend.deps.inputRemapper ? root.green : root.danger; anchors.verticalCenter: parent.verticalCenter }
                 Text { text: "Engine: "; color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             }
-            Text { text: backend.deps.inputRemapper ? "input-remapper connected" : "input-remapper not found"; color: backend.deps.inputRemapper ? root.green : "#d65c44"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+            Text { text: backend.deps.inputRemapper ? "input-remapper connected" : "input-remapper not found"; color: backend.deps.inputRemapper ? root.green : root.danger; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             Text { text: "Device: " + (root.device ? root.device.name : ""); color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             Text { text: "Preset: " + root.curProfile + ".json"; color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         }
@@ -321,9 +323,8 @@ Rectangle {
                     model: backend.deviceIds()
                     RailDevice {
                         width: parent.width
-                        devId: modelData
                         devName: backend.layouts[modelData].name.replace("Razer ", "")
-                        devType: (modelData === "tartarus" ? "Keypad · " : "Mouse · ") + backend.layouts[modelData].usb
+                        devType: backend.layouts[modelData].kind + " · " + backend.layouts[modelData].usb
                         active: root.curDev === modelData
                         onChosen: root.switchDevice(modelData)
                     }
@@ -379,7 +380,7 @@ Rectangle {
                     spacing: 13; width: parent.width
                     Rectangle {
                         width: 46; height: 46; radius: 10; color: "#22331c"; border.width: 1; border.color: root.greenDim
-                        Text { anchors.centerIn: parent; text: root.selKey.replace("TAR_", "").replace("NAGA_", "").slice(0, 5); color: root.green; font.pixelSize: 14; font.bold: true }
+                        Text { anchors.centerIn: parent; text: root.selKey.split("_").slice(1).join("_").slice(0, 5); color: root.green; font.pixelSize: 14; font.bold: true }
                     }
                     Column {
                         anchors.verticalCenter: parent.verticalCenter; spacing: 2
@@ -423,7 +424,7 @@ Rectangle {
                         Row {
                             width: parent.width; spacing: 10; height: 54
                             Rectangle {
-                                width: parent.width - 90; height: 54; radius: 10; color: "#0c0c11"
+                                width: parent.width - 90; height: 54; radius: 10; color: root.bg0
                                 border.width: 1; border.color: root.listening ? root.green : root.line2
                                 Text {
                                     anchors.centerIn: parent
@@ -498,7 +499,7 @@ Rectangle {
                             Rectangle {
                                 width: tabTxt.implicitWidth + 36; height: 30; radius: 7
                                 color: root.curView === modelData ? root.greenDim : "transparent"
-                                Text { id: tabTxt; anchors.centerIn: parent; text: root.viewObj && root.device.views[modelData].label ? root.device.views[modelData].label : modelData; color: root.curView === modelData ? root.greenTxt : root.muted; font.pixelSize: 12; font.bold: true }
+                                Text { id: tabTxt; anchors.centerIn: parent; text: (root.device && root.device.views[modelData]) ? (root.device.views[modelData].label || modelData) : modelData; color: root.curView === modelData ? root.greenTxt : root.muted; font.pixelSize: 12; font.bold: true }
                                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.curView = modelData; root.deselect() } }
                             }
                         }

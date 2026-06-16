@@ -2,6 +2,7 @@
   "_comment": "KEYZER hotspot geometry per device/view, in image-pixel space. Produced with the prototype's drag-to-align editor. evdev code per key is TBD (see capture.py / ARCHITECTURE.md).",
   "tartarus": {
     "name": "Razer Tartarus Pro",
+    "kind": "Keypad",
     "usb": "1532:0244",
     "views": {
       "main": {
@@ -39,6 +40,7 @@
   },
   "naga": {
     "name": "Razer Naga Pro",
+    "kind": "Mouse",
     "usb": "1532:008f",
     "views": {
       "top": {

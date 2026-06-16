@@ -54,6 +54,9 @@ Rectangle {
     function markDirty() { dirtyText = "● Unsaved → autosaving…"; dirtyTimer.restart() }
     function showToast(m) { toast.msg = m; toast.show() }
     function curBinding() { return bindMap[selKey] !== undefined ? bindMap[selKey] : "" }
+    property var ov: ({})   // drag-align position overrides, keyed "dev|view|id"
+    function ovKey(id) { return curDev + "|" + curView + "|" + id }
+    function setCoord(id, nx, ny) { var m = ov; m[ovKey(id)] = { x: Math.round(nx), y: Math.round(ny) }; ov = m }
 
     function applyBinding() {
         if (selKey === "") return
@@ -149,14 +152,15 @@ Rectangle {
         property string binding: ""
         property bool selected: false
         property int litIndex: 0
-        x: k.x; y: k.y; width: k.w; height: k.h
+        width: k.w; height: k.h
+        Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
         Rectangle {
             id: hit
             anchors.fill: parent; radius: 9
             color: hs.selected ? Qt.rgba(root.green.r, root.green.g, root.green.b, 0.12)
                  : root.aligning ? Qt.rgba(root.cyan.r, root.cyan.g, root.cyan.b, 0.10)
                  : "transparent"
-            border.width: (hs.selected || root.aligning || hsMa.containsMouse) ? 2 : 0
+            border.width: (hs.selected || root.aligning || hov.hovered) ? 2 : 0
             border.color: hs.selected ? root.green
                         : root.aligning ? root.cyan
                         : Qt.rgba(1, 1, 1, 0.55)
@@ -183,12 +187,9 @@ Rectangle {
             border.width: 2
             border.color: Qt.hsla((((hs.litIndex * 22) + (root.litStep * 8)) % 360) / 360, 0.9, 0.55, 0.9)
         }
-        MouseArea {
-            id: hsMa
-            anchors.fill: parent; hoverEnabled: true
-            cursorShape: root.aligning ? Qt.SizeAllCursor : Qt.PointingHandCursor
-            onClicked: if (!root.aligning) root.selectKey(hs.k.id)
-        }
+        HoverHandler { id: hov; cursorShape: root.aligning ? Qt.SizeAllCursor : Qt.PointingHandCursor }
+        TapHandler { enabled: !root.aligning; onTapped: root.selectKey(hs.k.id) }
+        DragHandler { enabled: root.aligning; target: hs; onActiveChanged: if (!active) root.setCoord(hs.k.id, hs.x, hs.y) }
     }
 
     component RailDevice: Rectangle {
@@ -581,13 +582,20 @@ Rectangle {
     // copy-layout placeholder (drag-align wired in next phase)
     function copyLayout() {
         var out = {}
-        for (var d in backend.layouts) {
+        var L = backend.layouts
+        for (var d in L) {
             out[d] = {}
-            var views = backend.layouts[d].views
-            for (var v in views) out[d][v] = views[v].keys
+            var vns = backend.viewNames(d)
+            for (var i = 0; i < vns.length; i++) {
+                var vn = vns[i]
+                out[d][vn] = L[d].views[vn].keys.map(function (kk) {
+                    var o = root.ov[d + "|" + vn + "|" + kk.id]
+                    return { id: kk.id, x: o ? o.x : kk.x, y: o ? o.y : kk.y, w: kk.w, h: kk.h }
+                })
+            }
         }
         backend.copyToClipboard(JSON.stringify(out))
-        showToast("Layout copied")
+        showToast("Layout copied to clipboard")
     }
 
     // Escape to deselect

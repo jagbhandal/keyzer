@@ -7,7 +7,7 @@
 <style>
   :root{--bg:#0b0b0e;--bg2:#101015;--panel:#16161d;--panel2:#1c1c25;--line:#2a2a35;--line2:#363645;
     --txt:#e9e9ee;--muted:#8b8b97;--muted2:#5e5e6b;--green:#44d62c;--green-dim:#2f9a1f;--green-glow:rgba(68,214,44,.4);
-    --cyan:#22c8ff;--radius:14px;--radius-sm:9px;--font:'Segoe UI',Roboto,Ubuntu,'Helvetica Neue',Arial,system-ui,sans-serif;}
+    --cyan:#22c8ff;--on-green:rgb(234,251,230);--radius:14px;--radius-sm:9px;--font:'Segoe UI',Roboto,Ubuntu,'Helvetica Neue',Arial,system-ui,sans-serif;}
   *{box-sizing:border-box;margin:0;padding:0}
   html,body{height:100%}
   body{background:radial-gradient(1200px 700px at 70% -10%,#15151c 0%,var(--bg) 55%) fixed;color:var(--txt);font-family:var(--font);font-size:14px;overflow:hidden;-webkit-font-smoothing:antialiased}
@@ -26,7 +26,7 @@
   .switch{width:40px;height:22px;border-radius:12px;background:#2a2a35;position:relative;transition:.18s;border:1px solid var(--line2)}
   .switch::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#9a9aa6;transition:.18s}
   .toggle.on .switch{background:var(--green-dim);border-color:var(--green)}
-  .toggle.on .switch::after{left:20px;background:#eafbe6}
+  .toggle.on .switch::after{left:20px;background:var(--on-green)}
   .toggle.align.on .switch{background:#1d7fa6;border-color:var(--cyan)}
 
   .body{display:grid;grid-template-columns:210px 1fr 340px;min-height:0}
@@ -51,7 +51,7 @@
   .stage .title p{font-size:12px;color:var(--muted);margin-top:3px}
   .viewtabs{position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:3;display:none;gap:3px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px}
   .viewtabs button{background:transparent;border:0;color:var(--muted);padding:7px 18px;border-radius:7px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px}
-  .viewtabs button.sel{background:var(--green-dim);color:#eafbe6}
+  .viewtabs button.sel{background:var(--green-dim);color:var(--on-green)}
   .alignbar{position:absolute;top:14px;right:22px;z-index:3;display:none;align-items:center;gap:10px;background:rgba(13,18,22,.92);border:1px solid var(--cyan);border-radius:10px;padding:8px 12px;font-size:12px;color:#bfe9fb}
   .alignbar.show{display:flex}
   .alignbar button{background:#1d7fa6;border:1px solid var(--cyan);color:#eafaff;padding:6px 11px;border-radius:7px;cursor:pointer;font-family:inherit;font-weight:600;font-size:12px}
@@ -83,14 +83,14 @@
   .lbl{font-size:10.5px;letter-spacing:1.2px;color:var(--muted);text-transform:uppercase;margin-bottom:9px}
   .seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:2px;flex-wrap:wrap}
   .seg button{flex:1;background:transparent;border:0;color:var(--muted);padding:7px 4px;border-radius:7px;cursor:pointer;font-family:inherit;font-size:11.5px;font-weight:600}
-  .seg button.sel{background:var(--green-dim);color:#eafbe6}
+  .seg button.sel{background:var(--green-dim);color:var(--on-green)}
   .capture{display:flex;gap:10px}
   .capbox{flex:1;background:#0c0c11;border:1px dashed var(--line2);border-radius:10px;min-height:54px;display:grid;place-items:center;font-size:18px;font-weight:700;letter-spacing:1px}
   .capbox.listening{border-color:var(--green);color:var(--green);animation:pulse 1.1s infinite}
   @keyframes pulse{0%,100%{box-shadow:0 0 0 0 var(--green-glow)}50%{box-shadow:0 0 0 5px transparent}}
   .btn{background:var(--panel2);border:1px solid var(--line2);color:var(--txt);padding:0 16px;border-radius:10px;cursor:pointer;font-family:inherit;font-weight:600;font-size:13px}
   .btn:hover{border-color:var(--green-dim)}
-  .btn.green{background:var(--green-dim);border-color:var(--green);color:#eafbe6}.btn.block{width:100%;padding:11px}
+  .btn.green{background:var(--green-dim);border-color:var(--green);color:var(--on-green)}.btn.block{width:100%;padding:11px}
   .btnrow{display:flex;gap:10px}
   .chips{display:flex;flex-wrap:wrap;gap:6px}
   .chip{background:var(--panel2);border:1px solid var(--line);color:var(--muted);padding:6px 10px;border-radius:7px;cursor:pointer;font-size:11.5px;font-weight:600}
@@ -98,7 +98,7 @@
   .writeline{font-size:11px;color:var(--muted2);line-height:1.6}.writeline code{color:#9fd58f;background:#11160e;padding:1px 6px;border-radius:5px}
   footer{display:flex;align-items:center;gap:16px;padding:0 18px;background:#0c0c11;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted)}
   footer .ok{color:var(--green)}.footdot{width:7px;height:7px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green-glow);display:inline-block;margin-right:6px}
-  .toast{position:fixed;bottom:46px;left:50%;transform:translateX(-50%) translateY(20px);background:rgba(34,51,28,.95);border:1px solid var(--green-dim);color:#eafbe6;padding:11px 18px;border-radius:10px;font-size:13px;font-weight:600;opacity:0;pointer-events:none;transition:.25s}
+  .toast{position:fixed;bottom:46px;left:50%;transform:translateX(-50%) translateY(20px);background:rgba(34,51,28,.95);border:1px solid var(--green-dim);color:var(--on-green);padding:11px 18px;border-radius:10px;font-size:13px;font-weight:600;opacity:0;pointer-events:none;transition:.25s}
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   .concept{position:fixed;top:10px;right:14px;font-size:10px;letter-spacing:1px;color:var(--muted2);text-transform:uppercase;border:1px solid var(--line);padding:4px 9px;border-radius:20px;background:rgba(0,0,0,.3);z-index:6}
   textarea#layoutOut{position:fixed;bottom:50px;right:14px;width:380px;height:120px;background:#0a0c0e;color:#bfe9fb;border:1px solid var(--cyan);border-radius:8px;font:11px monospace;padding:8px;display:none;z-index:7}
@@ -134,7 +134,7 @@
       <div class="title"><h2 id="devTitle">Razer Tartarus Pro</h2><p id="devSub">click a key to remap</p></div>
       <div class="viewtabs" id="viewTabs"></div>
       <div class="alignbar" id="alignBar"><span>🛠 Align — drag hotspots onto their keys</span><button id="copyLayout">Copy layout</button></div>
-      <svg class="device" id="deviceSvg" viewBox="0 0 760 1051"></svg>
+      <svg class="device" id="deviceSvg"></svg>
     </main>
 
     <aside class="assign" id="assign">
@@ -156,6 +156,7 @@
 
 <script>
 const NS='http://www.w3.org/2000/svg';
+const $=document.getElementById.bind(document);
 const IMG={tartarus:'__IMG_TARTARUS__',naga_top:'__IMG_NAGA_TOP__',naga_side:'__IMG_NAGA_SIDE__'};
 
 const TAR_KEYS=[
@@ -209,7 +210,7 @@ const PROFILES={
 };
 
 let curDev='tartarus',curView='main',curProfile='Gaming',selKey=null,capValue=null,aligning=false;
-const svg=document.getElementById('deviceSvg');
+const svg=$('deviceSvg');
 const el=(t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;};
 const vObj=()=>DEVICES[curDev].views[curView];
 const keyMeta=id=>vObj().keys.find(k=>k.id===id);
@@ -221,28 +222,29 @@ function renderDevice(){
   v.keys.forEach(k=>{
     const g=el('g',{class:'key','data-id':k.id});g.setAttribute('transform',`translate(${k.x},${k.y})`);
     g.appendChild(el('rect',{class:'hit',width:k.w,height:k.h,rx:9}));
-    const pill=el('g',{class:'pill'});pill.appendChild(el('rect',{x:0,y:0,width:1,height:24,rx:6}));
+    const pill=el('g',{class:'pill'});pill.appendChild(el('rect',{x:0,y:0,height:24,rx:6}));
     pill.appendChild(el('text',{x:0,y:0,'font-size':14}));g.appendChild(pill);
     g.addEventListener('pointerdown',e=>{if(aligning)startDrag(e,k,g);});
     g.addEventListener('click',()=>{if(!aligning)selectKey(k.id);});
     svg.appendChild(g);
   });
   paint();renderTabs();
-  document.getElementById('devTitle').textContent=d.name;
-  document.getElementById('devSub').textContent=v.sub;
-  document.getElementById('fDev').textContent='Device: '+d.name;
+  $('devTitle').textContent=d.name;
+  $('devSub').textContent=v.sub;
+  $('fDev').textContent='Device: '+d.name;
 }
 function renderTabs(){
-  const d=DEVICES[curDev],tabs=document.getElementById('viewTabs'),names=Object.keys(d.views);
+  const d=DEVICES[curDev],tabs=$('viewTabs'),names=Object.keys(d.views);
   if(names.length<2){tabs.style.display='none';tabs.innerHTML='';return;}
   tabs.style.display='flex';tabs.innerHTML='';
   names.forEach(n=>{const b=document.createElement('button');b.textContent=d.views[n].label;if(n===curView)b.className='sel';
     b.onclick=()=>{curView=n;selKey=null;deselect();renderDevice();if(lit)startLights();};tabs.appendChild(b);});
 }
 function paint(){
-  const map=PROFILES[curProfile][curDev]||{};
+  const map=PROFILES[curProfile][curDev]||{},kmap={};
+  vObj().keys.forEach(k=>kmap[k.id]=k);
   svg.querySelectorAll('.key').forEach(g=>{
-    const id=g.getAttribute('data-id'),b=map[id],k=keyMeta(id);if(!k)return;
+    const id=g.getAttribute('data-id'),k=kmap[id];if(!k)return;const b=map[id];
     g.classList.toggle('bound',!!b);g.classList.toggle('selected',id===selKey);
     const label=b||(selKey===id?'·':''),pill=g.querySelector('.pill'),rect=pill.querySelector('rect'),tx=pill.querySelector('text');
     tx.textContent=label;const w=Math.max(26,label.length*9+14);
@@ -258,44 +260,44 @@ function startDrag(e,k,g){e.preventDefault();const s=svgPt(e),ox=k.x,oy=k.y;
   const up=()=>{window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',up);};
   window.addEventListener('pointermove',move);window.addEventListener('pointerup',up);}
 function copyLayout(){const out={};for(const dev in DEVICES){out[dev]={};for(const vn in DEVICES[dev].views)out[dev][vn]=DEVICES[dev].views[vn].keys.map(k=>({id:k.id,x:Math.round(k.x),y:Math.round(k.y),w:k.w,h:k.h}));}
-  const json=JSON.stringify(out),ta=document.getElementById('layoutOut');ta.value=json;ta.classList.add('show');ta.select();try{navigator.clipboard.writeText(json);}catch(e){}toast('Layout copied — paste it back to me');}
+  const json=JSON.stringify(out),ta=$('layoutOut');ta.value=json;ta.classList.add('show');ta.select();try{navigator.clipboard.writeText(json);}catch(e){}toast('Layout copied — paste it back to me');}
 
 /* assign panel */
 function selectKey(id){selKey=id;capValue=null;const k=keyMeta(id),map=PROFILES[curProfile][curDev]||{};
-  document.getElementById('emptyState').style.display='none';document.getElementById('assignBody').style.display='flex';
-  document.getElementById('keyBadge').textContent=(k.label||'•').slice(0,5);
-  document.getElementById('keyName').textContent=k.id.replace(/_/g,' ');
-  document.getElementById('keySub').textContent='hotspot: '+k.id;
-  document.getElementById('capBox').textContent=map[id]||'—';
-  document.getElementById('writeline').innerHTML=`Writes <code>${id}</code> → output into <code>${curProfile}.json</code> · reloads engine`;paint();}
-const capBox=document.getElementById('capBox');let listening=false;
-document.getElementById('listenBtn').onclick=()=>{listening=true;capBox.classList.add('listening');capBox.textContent='press…';};
+  $('emptyState').style.display='none';$('assignBody').style.display='flex';
+  $('keyBadge').textContent=(k.label||'•').slice(0,5);
+  $('keyName').textContent=k.id.replace(/_/g,' ');
+  $('keySub').textContent='hotspot: '+k.id;
+  $('capBox').textContent=map[id]||'—';
+  $('writeline').innerHTML=`Writes <code>${id}</code> → output into <code>${curProfile}.json</code> · reloads engine`;paint();}
+const capBox=$('capBox');let listening=false;
+$('listenBtn').onclick=()=>{listening=true;capBox.classList.add('listening');capBox.textContent='press…';};
 window.addEventListener('keydown',e=>{if(!listening)return;e.preventDefault();const p=[];
   if(e.ctrlKey&&e.key!=='Control')p.push('Ctrl');if(e.altKey&&e.key!=='Alt')p.push('Alt');if(e.shiftKey&&e.key!=='Shift')p.push('Shift');
   let k=e.key;if(k===' ')k='Space';if(k.length===1)k=k.toUpperCase();p.push(k);capValue=p.join('+');capBox.textContent=capValue;capBox.classList.remove('listening');listening=false;});
 const QUICK=['Esc','Tab','Shift','Ctrl','Alt','Space','Enter','↑','↓','←','→','Q','W','E','R','F','1','2','3','LMB','RMB','MMB'];
-const chips=document.getElementById('chips');QUICK.forEach(q=>{const c=document.createElement('div');c.className='chip';c.textContent=q;c.onclick=()=>{capValue=q;capBox.textContent=q;};chips.appendChild(c);});
+const chips=$('chips');QUICK.forEach(q=>{const c=document.createElement('div');c.className='chip';c.textContent=q;c.onclick=()=>{capValue=q;capBox.textContent=q;};chips.appendChild(c);});
 document.querySelectorAll('#typeSeg button').forEach(b=>b.onclick=()=>{document.querySelectorAll('#typeSeg button').forEach(x=>x.classList.remove('sel'));b.classList.add('sel');if(b.dataset.t==='disable'){capValue='✕';capBox.textContent='Disabled';}});
-document.getElementById('applyBtn').onclick=()=>{if(!selKey)return;const v=capValue||capBox.textContent;if(!v||v==='—'){toast('Pick a binding first');return;}
+$('applyBtn').onclick=()=>{if(!selKey)return;const v=capValue||capBox.textContent;if(!v||v==='—'){toast('Pick a binding first');return;}
   PROFILES[curProfile][curDev]=PROFILES[curProfile][curDev]||{};PROFILES[curProfile][curDev][selKey]=v;paint();markDirty();toast('Saved to '+curProfile+'.json');};
-document.getElementById('clearBtn').onclick=()=>{if(!selKey)return;if(PROFILES[curProfile][curDev])delete PROFILES[curProfile][curDev][selKey];capBox.textContent='—';capValue=null;paint();markDirty();toast('Cleared');};
-function markDirty(){document.getElementById('fDirty').textContent='● Unsaved → autosaving…';clearTimeout(markDirty._t);markDirty._t=setTimeout(()=>document.getElementById('fDirty').textContent='All changes saved',1400);}
+$('clearBtn').onclick=()=>{if(!selKey)return;if(PROFILES[curProfile][curDev])delete PROFILES[curProfile][curDev][selKey];capBox.textContent='—';capValue=null;paint();markDirty();toast('Cleared');};
+function markDirty(){$('fDirty').textContent='● Unsaved → autosaving…';clearTimeout(markDirty._t);markDirty._t=setTimeout(()=>$('fDirty').textContent='All changes saved',1400);}
 
 /* device / profile / toggles */
 document.querySelectorAll('.dev').forEach(elm=>elm.onclick=()=>{document.querySelectorAll('.dev').forEach(x=>x.classList.remove('active'));elm.classList.add('active');curDev=elm.dataset.dev;curView=DEVICES[curDev].defaultView;selKey=null;deselect();renderDevice();if(lit)startLights();});
-document.getElementById('profileSel').onchange=e=>{curProfile=e.target.value;selKey=null;deselect();document.getElementById('fPreset').innerHTML='Preset: <code style="color:#9fd58f">'+curProfile+'.json</code>';paint();};
-function deselect(){document.getElementById('emptyState').style.display='block';document.getElementById('assignBody').style.display='none';}
-function bindToggle(id,fn){const t=document.getElementById(id);t.onclick=()=>{t.classList.toggle('on');fn(t.classList.contains('on'));};}
-bindToggle('appAware',v=>document.getElementById('rules').style.display=v?'block':'none');
+$('profileSel').onchange=e=>{curProfile=e.target.value;selKey=null;deselect();$('fPreset').innerHTML='Preset: <code style="color:#9fd58f">'+curProfile+'.json</code>';paint();};
+function deselect(){$('emptyState').style.display='block';$('assignBody').style.display='none';}
+function bindToggle(id,fn){const t=$(id);t.onclick=()=>{t.classList.toggle('on');fn(t.classList.contains('on'));};}
+bindToggle('appAware',v=>$('rules').style.display=v?'block':'none');
 let lit=false,litT=null,litStep=0;
 bindToggle('lighting',v=>{lit=v;v?startLights():stopLights();});
 function startLights(){stopLights();const gs=[...svg.querySelectorAll('.key')];litT=setInterval(()=>{litStep++;gs.forEach((g,i)=>g.classList.toggle('lit',(i+litStep)%5<2));},220);}
 function stopLights(){clearInterval(litT);svg.querySelectorAll('.key').forEach(g=>g.classList.remove('lit'));}
-bindToggle('alignT',v=>{aligning=v;svg.classList.toggle('aligning',v);document.getElementById('alignBar').classList.toggle('show',v);
-  document.getElementById('railHint').textContent=v?'Drag each hotspot onto its real key (switch Top/Side view too). When done, hit “Copy layout” and paste it back.':'Click a key on the device image, then assign a binding.';
-  if(!v)document.getElementById('layoutOut').classList.remove('show');});
-document.getElementById('copyLayout').onclick=copyLayout;
-function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove('show'),1900);}
+bindToggle('alignT',v=>{aligning=v;svg.classList.toggle('aligning',v);$('alignBar').classList.toggle('show',v);
+  $('railHint').textContent=v?'Drag each hotspot onto its real key (switch Top/Side view too). When done, hit “Copy layout” and paste it back.':'Click a key on the device image, then assign a binding.';
+  if(!v)$('layoutOut').classList.remove('show');});
+$('copyLayout').onclick=copyLayout;
+function toast(m){const t=$('toast');t.textContent=m;t.classList.add('show');clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove('show'),1900);}
 window.addEventListener('keydown',e=>{if(e.key==='Escape'&&!listening){selKey=null;deselect();paint();}});
 renderDevice();
 </script>

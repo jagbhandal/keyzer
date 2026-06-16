@@ -5,6 +5,8 @@
     "usb": "1532:0244",
     "views": {
       "main": {
+        "label": "Keypad",
+        "sub": "20 keys + thumb module · click a key to remap",
         "image": "prototype/assets/tartarus-top.png",
         "size": [760, 1051],
         "keys": [
@@ -40,6 +42,8 @@
     "usb": "1532:008f",
     "views": {
       "top": {
+        "label": "Top view",
+        "sub": "main buttons · L/R click · wheel + tilt · sensitivity",
         "image": "prototype/assets/naga-top.png",
         "size": [600, 958],
         "keys": [
@@ -53,6 +57,8 @@
         ]
       },
       "side": {
+        "label": "Side view",
+        "sub": "12-button thumb grid",
         "image": "prototype/assets/naga-side.png",
         "size": [1000, 538],
         "keys": [

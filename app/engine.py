@@ -16,6 +16,7 @@ them: ``output(input)``.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -98,7 +99,10 @@ def _vocab() -> frozenset[str]:
     unioned with the keysyms above so generation is testable anywhere."""
     names: set[str] = set(_KNOWN_KEYSYMS)
     if shutil.which(CONTROL):
-        r = subprocess.run([CONTROL, "--symbol-names"], capture_output=True, text=True)
+        try:
+            r = subprocess.run([CONTROL, "--symbol-names"], capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            return frozenset(names)
         if r.returncode == 0:
             names |= {ln.strip() for ln in r.stdout.splitlines() if ln.strip()}
     return frozenset(names)
@@ -122,14 +126,13 @@ def output(value: str) -> tuple[str, str]:
     Accepts friendly labels ("Copy", "LMB"), the prototype's "C+x" combos, plain
     keys ("W", "1"), or an already-valid symbol / chord. Raises Untranslatable
     for empty, unsupported-placeholder, or unknown values."""
-    v = (value or "").strip()
+    if not isinstance(value, str):
+        raise Untranslatable("binding isn't text")
+    v = value.strip()
     if not v:
         raise Untranslatable("no binding")
     if v.lower() in _UNSUPPORTED:
         raise Untranslatable(_UNSUPPORTED[v.lower()])
-
-    if "(" in v and ")" in v:  # a macro — let input-remapper validate it
-        return "keyboard", v
 
     combo = re.fullmatch(r"[cC]\+([A-Za-z0-9])", v)  # prototype "C+C" = Ctrl+C
     if combo:
@@ -170,9 +173,12 @@ def preset_path(device_name: str, preset: str) -> Path:
 
 
 def preset_name_for(profile: str) -> str:
-    """A namespaced preset filename so we never clobber the user's own presets."""
+    """A namespaced, collision-free preset filename. Distinct profile names that
+    slug identically ('Gaming' vs 'gaming') get distinct files via a name hash, so
+    Apply never silently overwrites another profile's preset."""
     slug = re.sub(r"[^a-z0-9]+", "-", profile.lower()).strip("-") or "profile"
-    return f"keyzer-{slug}"
+    digest = hashlib.sha1(profile.encode()).hexdigest()[:6]
+    return f"keyzer-{slug}-{digest}"
 
 
 def build_preset(binds: dict, captures: dict) -> tuple[list[dict], list[str]]:
@@ -187,7 +193,7 @@ def build_preset(binds: dict, captures: dict) -> tuple[list[dict], list[str]]:
             continue
         try:
             target, symbol = output(value)
-        except Untranslatable as exc:
+        except (Untranslatable, AttributeError, TypeError, ValueError) as exc:
             warnings.append(f"{hotspot} = {value!r}: {exc}")
             continue
         inp = {"type": int(cap["type"]), "code": int(cap["code"])}
@@ -213,7 +219,10 @@ def available() -> bool:
 
 
 def _control(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run([CONTROL, *args], capture_output=True, text=True)
+    try:
+        return subprocess.run([CONTROL, *args], capture_output=True, text=True, timeout=10)
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(args, 1, "", "input-remapper timed out")
 
 
 def service_ready() -> bool:

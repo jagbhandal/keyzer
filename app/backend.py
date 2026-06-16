@@ -107,6 +107,8 @@ class Backend(QObject):
         if isinstance(saved, dict) and isinstance(saved.get("profiles"), dict) and saved["profiles"]:
             self._profiles = saved["profiles"]
             self._active = saved.get("active")
+            if isinstance(saved.get("live"), dict):
+                self._live = saved["live"]   # presets persist in the daemon across restarts
         else:
             self._profiles = _default_profiles()
             self._active = "Gaming"
@@ -116,7 +118,8 @@ class Backend(QObject):
 
     def _save(self) -> None:
         engine.save_json(engine.PROFILES,
-                         {"version": 1, "active": self._active, "profiles": self._profiles})
+                         {"version": 1, "active": self._active,
+                          "live": self._live, "profiles": self._profiles})
 
     # ----- geometry (single source of truth) -----
     @Property("QVariant", constant=True)
@@ -147,10 +150,6 @@ class Backend(QObject):
     @Property("QVariant", notify=bindingsChanged)
     def bindings(self) -> dict:
         return self._profiles
-
-    @Slot(result="QVariant")
-    def profileNames(self) -> list[str]:
-        return list(self._profiles.keys())
 
     @Slot(str, str, str, str)
     def setBinding(self, profile: str, dev: str, key: str, value: str) -> None:
@@ -191,6 +190,7 @@ class Backend(QObject):
         self._active = name
         self._save()
         self.profilesChanged.emit()
+        self.bindingsChanged.emit()
         return {"ok": True, "name": name}
 
     @Slot(str, str, result="QVariant")
@@ -207,6 +207,7 @@ class Backend(QObject):
             self._active = new
         self._save()
         self.profilesChanged.emit()
+        self.bindingsChanged.emit()
         return {"ok": True, "name": new}
 
     @Slot(str, str, result="QVariant")
@@ -222,6 +223,7 @@ class Backend(QObject):
         self._active = new
         self._save()
         self.profilesChanged.emit()
+        self.bindingsChanged.emit()
         return {"ok": True, "name": new}
 
     @Slot(str, result="QVariant")
@@ -235,6 +237,7 @@ class Backend(QObject):
             self._active = next(iter(self._profiles))
         self._save()
         self.profilesChanged.emit()
+        self.bindingsChanged.emit()
         return {"ok": True}
 
     @Slot(str, result=str)
@@ -263,11 +266,12 @@ class Backend(QObject):
         while name in self._profiles:
             name = f"{base} {n}"
             n += 1
-        self._profiles[name] = {d: dict(v) for d, v in data["binds"].items()
-                                if isinstance(v, dict)}
+        self._profiles[name] = {d: {hk: str(hv) for hk, hv in v.items()}
+                                for d, v in data["binds"].items() if isinstance(v, dict)}
         self._active = name
         self._save()
         self.profilesChanged.emit()
+        self.bindingsChanged.emit()
         return {"ok": True, "name": name}
 
     # ----- engine: capture status + real remapping -----

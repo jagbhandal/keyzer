@@ -51,11 +51,18 @@ Rectangle {
         var p = backend.bindings[curProfile]
         return (p && p[curDev]) ? p[curDev] : ({})
     }
-    // hotspots on this device whose output is shared with another hotspot
+    // hotspots in the CURRENT view whose output is shared with another visible
+    // hotspot (scoped to the view so cross-view dups, e.g. WASD on keypad + thumb,
+    // aren't flagged when the partner is off-screen)
     readonly property var conflictKeys: {
-        var m = bindMap, counts = ({}), out = []
-        for (var k in m) counts[m[k]] = (counts[m[k]] || 0) + 1
-        for (var j in m) if (counts[m[j]] > 1) out.push(j)
+        var m = bindMap, vk = (viewObj && viewObj.keys) ? viewObj.keys : []
+        var counts = ({}), ids = []
+        for (var i = 0; i < vk.length; i++) {
+            var id = vk[i].id
+            if (m[id] !== undefined) { counts[m[id]] = (counts[m[id]] || 0) + 1; ids.push(id) }
+        }
+        var out = []
+        for (var n = 0; n < ids.length; n++) if (counts[m[ids[n]]] > 1) out.push(ids[n])
         return out
     }
     readonly property int boundCount: Object.keys(bindMap).length
@@ -78,7 +85,7 @@ Rectangle {
         var v = capValue !== "" ? capValue : curBinding()
         if (v === "" || v === "—") { showToast("Pick a binding first"); return }
         backend.setBinding(curProfile, curDev, selKey, v)
-        markDirty(); showToast("Saved to " + curProfile + ".json")
+        markDirty(); showToast("Saved to the " + curProfile + " profile")
     }
     function clearBinding() {
         if (selKey === "") return

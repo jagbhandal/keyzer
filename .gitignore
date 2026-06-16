@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+
+# Editors / OS
+*.swp
+*~
+.DS_Store
+.vscode/
+.idea/
+
+# Node (future app shell)
+node_modules/
+dist-app/
+
+# Note: dist/keyzer.html is committed on purpose (openable prototype build)

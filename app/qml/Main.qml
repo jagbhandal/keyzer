@@ -25,6 +25,7 @@ Rectangle {
     readonly property color greenTxt: "#eafbe6"
     readonly property color bg0: "#0c0c11"
     readonly property color danger: "#d65c44"
+    readonly property color amber: "#e0a83a"
 
     // ---------- ui state ----------
     property string curDev: "tartarus"
@@ -38,6 +39,9 @@ Rectangle {
     property bool listening: false
     property int litStep: 0
     property string dirtyText: "All changes saved"
+    property var applyResult: null          // last Apply-to-hardware report
+    property var capSummary: ({})            // per-device captured-key counts
+    property bool qaLive: false              // offscreen QA: force the LIVE pill visible
 
     // ---------- derived ----------
     readonly property var device: backend.layouts[curDev]
@@ -47,6 +51,14 @@ Rectangle {
         var p = backend.bindings[curProfile]
         return (p && p[curDev]) ? p[curDev] : ({})
     }
+    // hotspots on this device whose output is shared with another hotspot
+    readonly property var conflictKeys: {
+        var m = bindMap, counts = ({}), out = []
+        for (var k in m) counts[m[k]] = (counts[m[k]] || 0) + 1
+        for (var j in m) if (counts[m[j]] > 1) out.push(j)
+        return out
+    }
+    readonly property int boundCount: Object.keys(bindMap).length
 
     // ---------- logic ----------
     function firstView(dev) { return backend.viewNames(dev)[0] }
@@ -73,6 +85,21 @@ Rectangle {
         backend.clearBinding(curProfile, curDev, selKey)
         capValue = ""; markDirty(); showToast("Cleared")
     }
+    function applyToHardware() {
+        if (!backend.deps.inputRemapper) { showToast("input-remapper not found"); return }
+        showToast("Applying " + curProfile + " to your hardware…")
+        applyTimer.restart()   // defer so the toast paints before the (blocking) call
+    }
+    function syncProfile() { curProfile = backend.activeProfile }
+    function exportProfile() {
+        var r = backend.exportProfile(curProfile)
+        if (r.ok) { backend.copyToClipboard(r.json); showToast("“" + r.name + "” copied — paste to share") }
+        else showToast(r.error)
+    }
+    function stopHardware() {
+        var r = backend.stopAll()
+        showToast(r.ok ? "Remapping stopped — devices back to default" : (r.error || "Stop failed"))
+    }
     function keyLabel(event) {
         var parts = []
         if (event.modifiers & Qt.ControlModifier) parts.push("Ctrl")
@@ -94,6 +121,8 @@ Rectangle {
 
     Component.onCompleted: {
         curView = firstView(curDev)
+        capSummary = backend.captureSummary()
+        curProfile = backend.activeProfile
         // offscreen QA: drive initial state from env vars
         var q = backend.qaState()
         if (q.KEYZER_DEV) switchDevice(q.KEYZER_DEV)
@@ -103,9 +132,27 @@ Rectangle {
         if (q.KEYZER_LIGHTING === "1") lighting = true
         if (q.KEYZER_ALIGN === "1") aligning = true
         if (q.KEYZER_SELECT) selectKey(q.KEYZER_SELECT)
+        if (q.KEYZER_RESULT) {   // QA: render the apply-result overlay with sample data
+            root.applyResult = { ok: false, message: "Applied with issues — see below.", devices: [
+                { dev: "tartarus", name: "Razer Tartarus Pro", ok: true, count: 21,
+                  warnings: ["TAR_TPAD = 'WASD': directional pads aren't supported yet"], error: null },
+                { dev: "naga", name: "Razer Naga Pro", ok: false, count: 0,
+                  warnings: [], error: "not captured — run capture.py" } ] }
+            resultOverlay.visible = true
+        }
+        if (q.KEYZER_DIALOG === "name") nameDialog.open("create", "New profile", "")
+        if (q.KEYZER_DIALOG === "import") importDialog.open()
+        if (q.KEYZER_LIVE) qaLive = true
     }
 
     Timer { id: dirtyTimer; interval: 1400; onTriggered: root.dirtyText = "All changes saved" }
+    Timer {
+        id: applyTimer; interval: 60
+        onTriggered: {
+            root.applyResult = backend.applyToHardware(root.curProfile)
+            resultOverlay.visible = true
+        }
+    }
     Timer { running: root.lighting; interval: 220; repeat: true; onTriggered: root.litStep++ }
 
     // ================= inline components =================
@@ -155,6 +202,7 @@ Rectangle {
         property var k
         property string binding: ""
         property bool selected: false
+        property bool conflict: false
         property int litIndex: 0
         width: k.w; height: k.h
         Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
@@ -176,11 +224,11 @@ Rectangle {
             width: Math.max(26, pillTxt.implicitWidth + 14); height: 24; radius: 6
             color: Qt.rgba(0.03, 0.035, 0.024, 0.86)
             border.width: 1
-            border.color: hs.selected ? root.green : root.alpha(root.green, 0.45)
+            border.color: hs.conflict ? root.amber : (hs.selected ? root.green : root.alpha(root.green, 0.45))
             Text {
                 id: pillTxt; anchors.centerIn: parent
                 text: hs.binding !== "" ? hs.binding : (hs.selected ? "·" : "")
-                color: root.green; font.pixelSize: 14; font.bold: true
+                color: hs.conflict ? root.amber : root.green; font.pixelSize: 14; font.bold: true
             }
         }
         Rectangle {
@@ -272,9 +320,62 @@ Rectangle {
                     MouseArea { id: ddMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: profileMenu.open() }
                     Menu {
                         id: profileMenu; y: profileDd.height + 4
-                        Repeater { model: backend.profileNames(); MenuItem { text: modelData; onTriggered: root.curProfile = text } }
+                        Repeater {
+                            model: backend.profileList
+                            MenuItem {
+                                text: (modelData === root.curProfile ? "●  " : "      ") + modelData
+                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile() }
+                            }
+                        }
+                        MenuSeparator {}
+                        MenuItem { text: "＋  New profile…"; onTriggered: nameDialog.open("create", "New profile", "") }
+                        MenuItem { text: "✎  Rename…"; onTriggered: nameDialog.open("rename", "Rename profile", root.curProfile) }
+                        MenuItem { text: "⧉  Duplicate…"; onTriggered: nameDialog.open("duplicate", "Duplicate profile", root.curProfile + " copy") }
+                        MenuSeparator {}
+                        MenuItem { text: "⤓  Import…"; onTriggered: importDialog.open() }
+                        MenuItem { text: "⤴  Export (copy)"; onTriggered: root.exportProfile() }
+                        MenuSeparator {}
+                        MenuItem { text: "🗑  Delete"; enabled: backend.profileList.length > 1
+                            onTriggered: nameDialog.open("delete", "Delete profile", "") }
                     }
                 }
+            }
+            Rectangle {
+                id: applyBtn; anchors.verticalCenter: parent.verticalCenter
+                width: applyRow.implicitWidth + 26; height: 34; radius: 9
+                color: applyMa.containsMouse ? root.green : root.greenDim
+                border.width: 1; border.color: root.green
+                Row {
+                    id: applyRow; anchors.centerIn: parent; spacing: 6
+                    Text { text: "⚡"; color: root.greenTxt; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Apply to device"; color: root.greenTxt; font.pixelSize: 12; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                }
+                MouseArea { id: applyMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.applyToHardware() }
+            }
+            Rectangle {
+                id: livePill; anchors.verticalCenter: parent.verticalCenter
+                visible: root.qaLive || Object.keys(backend.liveStatus).length > 0
+                width: liveRow.implicitWidth + 20; height: 34; radius: 9
+                color: lpMa.containsMouse ? root.alpha(root.danger, 0.18) : root.alpha(root.green, 0.12)
+                border.width: 1; border.color: lpMa.containsMouse ? root.danger : root.greenDim
+                Row {
+                    id: liveRow; anchors.centerIn: parent; spacing: 7
+                    Rectangle {
+                        width: 8; height: 8; radius: 4; anchors.verticalCenter: parent.verticalCenter
+                        color: lpMa.containsMouse ? root.danger : root.green
+                        SequentialAnimation on opacity {
+                            running: livePill.visible; loops: Animation.Infinite
+                            NumberAnimation { to: 0.35; duration: 700 }
+                            NumberAnimation { to: 1.0; duration: 700 }
+                        }
+                    }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 11; font.bold: true; font.letterSpacing: 1
+                        text: lpMa.containsMouse ? "STOP" : "LIVE"
+                        color: lpMa.containsMouse ? root.danger : root.green
+                    }
+                }
+                MouseArea { id: lpMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.stopHardware() }
             }
             FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "APP-AWARE"; on: root.appAware; onToggled: root.appAware = !root.appAware }
             FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"; enabled: backend.deps.openrazer; on: root.lighting; onToggled: root.lighting = !root.lighting }
@@ -299,7 +400,20 @@ Rectangle {
             }
             Text { text: backend.deps.inputRemapper ? "input-remapper connected" : "input-remapper not found"; color: backend.deps.inputRemapper ? root.green : root.danger; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             Text { text: "Device: " + (root.device ? root.device.name : ""); color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-            Text { text: "Preset: " + root.curProfile + ".json"; color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12
+                property var cs: root.capSummary[root.curDev]
+                text: cs ? (cs.captured > 0 ? ("● " + cs.captured + "/" + cs.total + " captured")
+                                            : "○ not captured — run capture.py") : ""
+                color: cs ? (cs.captured > 0 ? root.green : root.danger) : root.muted
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12
+                text: root.boundCount + " bound" + (root.conflictKeys.length > 0
+                      ? " · " + root.conflictKeys.length + " share an output" : "")
+                color: root.conflictKeys.length > 0 ? root.amber : root.muted
+            }
+            Text { text: "Preset: " + backend.presetNameFor(root.curProfile); color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         }
         Text { anchors { right: parent.right; rightMargin: 18; verticalCenter: parent.verticalCenter }text: root.dirtyText; color: root.muted; font.pixelSize: 12 }
     }
@@ -464,7 +578,7 @@ Rectangle {
                 }
                 Text {
                     width: parent.width; wrapMode: Text.WordWrap
-                    text: "Writes " + root.selKey + " → output into " + root.curProfile + ".json · reloads engine"
+                    text: "Saved to the " + root.curProfile + " profile · hit Apply to device to push it live"
                     color: root.muted2; font.pixelSize: 11
                 }
             }
@@ -542,6 +656,13 @@ Rectangle {
                         source: root.viewObj ? backend.imageUrl(root.viewObj.image) : ""
                         fillMode: Image.PreserveAspectFit; smooth: true
                     }
+                    // detail views (e.g. Tartarus thumb close-up) get a framed look
+                    Rectangle {
+                        anchors.fill: parent
+                        visible: root.viewObj && root.viewObj.framed === true
+                        color: "transparent"; radius: 14
+                        border.width: 2; border.color: root.line2
+                    }
                     Repeater {
                         model: root.viewObj ? root.viewObj.keys : []
                         Hotspot {
@@ -549,6 +670,7 @@ Rectangle {
                             litIndex: index
                             binding: root.bindMap[modelData.id] !== undefined ? root.bindMap[modelData.id] : ""
                             selected: root.selKey === modelData.id
+                            conflict: root.conflictKeys.indexOf(modelData.id) >= 0
                         }
                     }
                 }
@@ -568,6 +690,182 @@ Rectangle {
         Behavior on opacity { NumberAnimation { duration: 220 } }
         Text { id: toastTxt; anchors.centerIn: parent; text: toast.msg; color: root.greenTxt; font.pixelSize: 13; font.bold: true }
         Timer { id: toastTimer; interval: 1900; onTriggered: toast.opacity = 0 }
+    }
+
+    // ================= apply-to-hardware result =================
+    Item {
+        id: resultOverlay
+        anchors.fill: parent
+        visible: false
+        z: 100
+        Rectangle {
+            anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.55)
+            MouseArea { anchors.fill: parent; onClicked: resultOverlay.visible = false }
+        }
+        Rectangle {
+            anchors.centerIn: parent
+            width: 480
+            height: Math.min(parent.height - 80, resCol.implicitHeight + 40)
+            radius: 14; color: root.panelC; border.width: 1; border.color: root.line2
+            clip: true
+            Column {
+                id: resCol
+                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 20 }
+                spacing: 12
+                Row {
+                    spacing: 10
+                    Rectangle { width: 9; height: 9; radius: 4; anchors.verticalCenter: parent.verticalCenter
+                        color: (root.applyResult && root.applyResult.ok) ? root.green : root.danger }
+                    Text { text: "Apply to hardware"; color: root.txt; font.pixelSize: 15; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                }
+                Text {
+                    width: parent.width; wrapMode: Text.WordWrap
+                    text: root.applyResult ? root.applyResult.message : ""
+                    color: (root.applyResult && root.applyResult.ok) ? root.green : root.danger
+                    font.pixelSize: 13
+                }
+                Repeater {
+                    model: root.applyResult ? root.applyResult.devices : []
+                    Column {
+                        width: resCol.width; spacing: 4; topPadding: 4
+                        Row {
+                            spacing: 8
+                            Text { text: (modelData.ok ? "✓ " : "✕ ") + modelData.name
+                                color: modelData.ok ? root.txt : root.danger; font.pixelSize: 13; font.bold: true }
+                            Text { text: modelData.ok ? (modelData.count + " keys live") : (modelData.error || "failed")
+                                color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                        }
+                        Repeater {
+                            model: modelData.warnings || []
+                            Text { width: resCol.width - 14; wrapMode: Text.WordWrap; leftPadding: 14
+                                text: "• " + modelData; color: root.muted2; font.pixelSize: 11 }
+                        }
+                    }
+                }
+                Rectangle {
+                    width: parent.width; height: 38; radius: 9; color: root.greenDim; border.width: 1; border.color: root.green
+                    Text { anchors.centerIn: parent; text: "Done"; color: root.greenTxt; font.bold: true; font.pixelSize: 13 }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: resultOverlay.visible = false }
+                }
+            }
+        }
+    }
+
+    // ================= profile name dialog (create / rename / duplicate / delete) =================
+    Item {
+        id: nameDialog
+        anchors.fill: parent; visible: false; z: 110
+        property string mode: ""
+        property string title: ""
+        property string error: ""
+        function open(m, t, initial) {
+            mode = m; title = t; error = ""
+            nameField.text = initial || ""
+            visible = true
+            if (m !== "delete") { nameField.forceActiveFocus(); nameField.selectAll() }
+        }
+        function submit() {
+            var r
+            if (mode === "create") r = backend.createProfile(nameField.text)
+            else if (mode === "rename") r = backend.renameProfile(root.curProfile, nameField.text)
+            else if (mode === "duplicate") r = backend.duplicateProfile(root.curProfile, nameField.text)
+            else if (mode === "delete") r = backend.deleteProfile(root.curProfile)
+            else r = { ok: false, error: "?" }
+            if (r.ok) {
+                root.syncProfile(); visible = false
+                showToast(mode === "delete" ? "Profile deleted" : ("Saved “" + (r.name || "") + "”"))
+            } else { error = r.error }
+        }
+        Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.55)
+            MouseArea { anchors.fill: parent; onClicked: nameDialog.visible = false } }
+        Rectangle {
+            anchors.centerIn: parent; width: 380; radius: 14
+            height: dCol.implicitHeight + 36; color: root.panelC; border.width: 1; border.color: root.line2
+            Column {
+                id: dCol; spacing: 14
+                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 18 }
+                Text { text: nameDialog.title; color: root.txt; font.pixelSize: 15; font.bold: true }
+                Text { visible: nameDialog.mode === "delete"; width: parent.width; wrapMode: Text.WordWrap
+                    text: "Delete “" + root.curProfile + "”? This can't be undone."; color: root.muted; font.pixelSize: 13 }
+                Rectangle {
+                    visible: nameDialog.mode !== "delete"
+                    width: parent.width; height: 40; radius: 9; color: root.bg0
+                    border.width: 1; border.color: nameField.activeFocus ? root.green : root.line2
+                    TextField {
+                        id: nameField; anchors.fill: parent; anchors.margins: 2; leftPadding: 10
+                        verticalAlignment: TextInput.AlignVCenter; color: root.txt; font.pixelSize: 14
+                        selectByMouse: true; onAccepted: nameDialog.submit()
+                        background: Item {}
+                    }
+                }
+                Text { visible: nameDialog.error !== ""; text: nameDialog.error; color: root.danger; font.pixelSize: 12 }
+                Row {
+                    width: parent.width; spacing: 10; layoutDirection: Qt.RightToLeft
+                    Rectangle {
+                        width: 96; height: 36; radius: 9
+                        color: nameDialog.mode === "delete" ? root.danger : root.greenDim
+                        border.width: 1; border.color: nameDialog.mode === "delete" ? "#e8775f" : root.green
+                        Text { anchors.centerIn: parent; text: nameDialog.mode === "delete" ? "Delete" : "Save"; color: root.greenTxt; font.bold: true; font.pixelSize: 13 }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: nameDialog.submit() }
+                    }
+                    Rectangle {
+                        width: 90; height: 36; radius: 9; color: root.panel2; border.width: 1; border.color: root.line2
+                        Text { anchors.centerIn: parent; text: "Cancel"; color: root.txt; font.pixelSize: 13 }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: nameDialog.visible = false }
+                    }
+                }
+            }
+        }
+    }
+
+    // ================= import-profile dialog =================
+    Item {
+        id: importDialog
+        anchors.fill: parent; visible: false; z: 110
+        property string error: ""
+        function open() { error = ""; importField.text = ""; visible = true; importField.forceActiveFocus() }
+        function submit() {
+            var r = backend.importProfile(importField.text)
+            if (r.ok) { root.syncProfile(); visible = false; showToast("Imported “" + r.name + "”") }
+            else { error = r.error }
+        }
+        Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.55)
+            MouseArea { anchors.fill: parent; onClicked: importDialog.visible = false } }
+        Rectangle {
+            anchors.centerIn: parent; width: 460; radius: 14
+            height: iCol.implicitHeight + 36; color: root.panelC; border.width: 1; border.color: root.line2
+            Column {
+                id: iCol; spacing: 12
+                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 18 }
+                Text { text: "Import profile"; color: root.txt; font.pixelSize: 15; font.bold: true }
+                Text { text: "Paste an exported KEYZER profile (JSON) below."; color: root.muted; font.pixelSize: 12 }
+                Rectangle {
+                    width: parent.width; height: 150; radius: 9; color: root.bg0; clip: true
+                    border.width: 1; border.color: importField.activeFocus ? root.green : root.line2
+                    ScrollView {
+                        anchors.fill: parent; anchors.margins: 6
+                        TextArea {
+                            id: importField; color: root.txt; font.pixelSize: 12; font.family: "monospace"
+                            wrapMode: TextEdit.WrapAnywhere; selectByMouse: true; background: Item {}
+                        }
+                    }
+                }
+                Text { visible: importDialog.error !== ""; text: importDialog.error; color: root.danger; font.pixelSize: 12 }
+                Row {
+                    width: parent.width; spacing: 10; layoutDirection: Qt.RightToLeft
+                    Rectangle {
+                        width: 96; height: 36; radius: 9; color: root.greenDim; border.width: 1; border.color: root.green
+                        Text { anchors.centerIn: parent; text: "Import"; color: root.greenTxt; font.bold: true; font.pixelSize: 13 }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: importDialog.submit() }
+                    }
+                    Rectangle {
+                        width: 90; height: 36; radius: 9; color: root.panel2; border.width: 1; border.color: root.line2
+                        Text { anchors.centerIn: parent; text: "Cancel"; color: root.txt; font.pixelSize: 13 }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: importDialog.visible = false }
+                    }
+                }
+            }
+        }
     }
 
     // key capture for Listen

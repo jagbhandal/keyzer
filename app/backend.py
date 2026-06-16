@@ -82,7 +82,10 @@ class Backend(QObject):
 
     @Slot(str, result=str)
     def imageUrl(self, rel: str) -> str:
-        return (REPO / rel).resolve().as_uri()
+        # Confine to the repo: a layout entry (which may come from a community PR
+        # or, later, capture.py) must not point the image loader at arbitrary files.
+        p = (REPO / rel).resolve()
+        return p.as_uri() if p.is_relative_to(REPO) else ""
 
     @Slot(str, result="QVariant")
     def viewNames(self, dev: str) -> list[str]:

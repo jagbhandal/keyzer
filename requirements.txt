@@ -1,0 +1,10 @@
+# KEYZER runtime dependency: PySide6 (Qt 6 for Python).
+#
+# Supported install path on Ubuntu 26.04 (apt builds it for the system python3,
+# so it works on Python 3.14 where PyPI wheels may not yet):
+#
+#   sudo apt install python3-pyside6.qtquick python3-pyside6.qtquickcontrols2 \
+#                    python3-pyside6.qtsvg python3-pyside6.qtdbus
+#
+# pip alternative (only where PySide6 wheels exist for your Python):
+PySide6>=6.6

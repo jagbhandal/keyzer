@@ -1,0 +1,18 @@
+KEYZER — trademarks & artwork notice
+=====================================
+
+KEYZER is an independent, unofficial, community project. It is NOT affiliated
+with, authorized, endorsed, or sponsored by Razer Inc.
+
+"Razer", "Tartarus", "Naga", "Chroma", "Synapse", the Razer triple-snake logo,
+and related names and marks are trademarks or registered trademarks of
+Razer Inc. They are used here only nominatively — to identify the hardware this
+tool is compatible with — not to imply any affiliation.
+
+Device images included in this repository (prototype/assets/) are product
+renders/photographs that are © Razer Inc. All rights to those images remain
+with Razer Inc.; they are included solely to identify the corresponding device
+within the UI. If you are a Razer representative and want them removed, open an
+issue and they will be replaced with original artwork.
+
+KEYZER's own source code is released under the project's LICENSE.

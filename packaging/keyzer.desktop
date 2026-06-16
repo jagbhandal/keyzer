@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=KEYZER
+GenericName=Razer Key Remapper
+Comment=Visual key remapping for Razer peripherals
+Exec=keyzer
+Icon=keyzer
+Terminal=false
+Categories=Utility;Settings;HardwareSettings;
+Keywords=razer;remap;keybind;keymap;tartarus;naga;

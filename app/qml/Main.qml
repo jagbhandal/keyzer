@@ -115,6 +115,7 @@ Rectangle {
         signal toggled()
         implicitWidth: track.width + 8 + lbl.implicitWidth
         implicitHeight: 22
+        opacity: enabled ? 1 : 0.45
         Rectangle {
             id: track
             width: 40; height: 22; radius: 11
@@ -274,7 +275,7 @@ Rectangle {
                 }
             }
             FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "APP-AWARE"; on: root.appAware; onToggled: root.appAware = !root.appAware }
-            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"; on: root.lighting; onToggled: root.lighting = !root.lighting }
+            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"; enabled: backend.deps.openrazer; on: root.lighting; onToggled: root.lighting = !root.lighting }
             FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; root.deselect() } }
         }
     }
@@ -291,10 +292,10 @@ Rectangle {
             spacing: 16
             Row {
                 spacing: 6; anchors.verticalCenter: parent.verticalCenter
-                Rectangle { width: 7; height: 7; radius: 4; color: root.green; anchors.verticalCenter: parent.verticalCenter }
+                Rectangle { width: 7; height: 7; radius: 4; color: backend.deps.inputRemapper ? root.green : "#d65c44"; anchors.verticalCenter: parent.verticalCenter }
                 Text { text: "Engine: "; color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             }
-            Text { text: "input-remapper 2.2.1 connected"; color: root.green; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+            Text { text: backend.deps.inputRemapper ? "input-remapper connected" : "input-remapper not found"; color: backend.deps.inputRemapper ? root.green : "#d65c44"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             Text { text: "Device: " + (root.device ? root.device.name : ""); color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             Text { text: "Preset: " + root.curProfile + ".json"; color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         }

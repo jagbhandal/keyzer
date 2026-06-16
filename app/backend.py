@@ -7,14 +7,26 @@ a later phase. The UI never imports engine internals — it talks to this object
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+def _detect_deps() -> dict:
+    """What's available on this machine. Keymapping needs input-remapper;
+    lighting is optional and needs OpenRazer. The UI degrades gracefully."""
+    return {
+        "inputRemapper": shutil.which("input-remapper-control") is not None
+        or shutil.which("input-remapper-gtk") is not None,
+        "openrazer": importlib.util.find_spec("openrazer") is not None,
+    }
 
 
 def _default_profiles() -> dict:
@@ -53,11 +65,16 @@ class Backend(QObject):
         data = json.loads((REPO / "layouts.json").read_text())
         self._layouts = {k: v for k, v in data.items() if not k.startswith("_")}
         self._profiles = _default_profiles()
+        self._deps = _detect_deps()
 
     # ----- geometry (single source of truth) -----
     @Property("QVariant", constant=True)
     def layouts(self) -> dict:
         return self._layouts
+
+    @Property("QVariant", constant=True)
+    def deps(self) -> dict:
+        return self._deps
 
     @Slot(result="QVariant")
     def deviceIds(self) -> list[str]:

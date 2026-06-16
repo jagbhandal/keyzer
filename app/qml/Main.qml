@@ -150,6 +150,7 @@ Rectangle {
         if (q.KEYZER_DIALOG === "name") nameDialog.open("create", "New profile", "")
         if (q.KEYZER_DIALOG === "import") importDialog.open()
         if (q.KEYZER_LIVE) qaLive = true
+        if (q.KEYZER_LIGHTPANEL) lightingOverlay.openDemo()
     }
 
     Timer { id: dirtyTimer; interval: 1400; onTriggered: root.dirtyText = "All changes saved" }
@@ -385,7 +386,11 @@ Rectangle {
                 MouseArea { id: lpMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.stopHardware() }
             }
             FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "APP-AWARE"; on: root.appAware; onToggled: root.appAware = !root.appAware }
-            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"; enabled: backend.deps.openrazer; on: root.lighting; onToggled: root.lighting = !root.lighting }
+            FlatSwitch {
+                anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"
+                enabled: backend.deps.openrazer; on: root.lighting
+                onToggled: { root.lighting = !root.lighting; if (root.lighting) lightingOverlay.open() }
+            }
             FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; root.deselect() } }
         }
     }
@@ -870,6 +875,100 @@ Rectangle {
                         Text { anchors.centerIn: parent; text: "Cancel"; color: root.txt; font.pixelSize: 13 }
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: importDialog.visible = false }
                     }
+                }
+            }
+        }
+    }
+
+    // ================= lighting panel (OpenRazer, optional) =================
+    Item {
+        id: lightingOverlay
+        anchors.fill: parent; visible: false; z: 110
+        property var panel: ({ error: null, devices: [] })
+        readonly property var swatches: [["Razer", 68, 214, 44], ["White", 255, 255, 255], ["Red", 230, 40, 40],
+            ["Blue", 40, 120, 255], ["Cyan", 34, 200, 255], ["Pink", 220, 40, 200], ["Amber", 230, 170, 40], ["Off", 0, 0, 0]]
+        function open() { panel = backend.lightingDevices(); visible = true }
+        function openDemo() {   // offscreen QA only
+            panel = { error: null, devices: [
+                { id: "tartarus", name: "Razer Tartarus Pro", brightness: 80, effects: ["static", "reactive", "none"] },
+                { id: "naga", name: "Razer Naga Pro", brightness: 100, effects: ["static", "spectrum", "breath_single", "wave", "none"] } ] }
+            visible = true
+        }
+        function applyColor(devId, sw) {
+            var r = backend.setLightEffect(devId, sw[0] === "Off" ? "none" : "static", sw[1], sw[2], sw[3])
+            showToast(r.ok ? (devId + " → " + sw[0]) : (r.error || "lighting failed"))
+        }
+        function applyEffect(devId, eff) {
+            var r = backend.setLightEffect(devId, eff, 68, 214, 44)
+            showToast(r.ok ? (devId + " → " + eff) : (r.error || "lighting failed"))
+        }
+        function setBright(devId, pct) {
+            var r = backend.setLightBrightness(devId, pct)
+            if (r.ok) open(); else showToast(r.error || "brightness failed")
+        }
+        Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.55)
+            MouseArea { anchors.fill: parent; onClicked: lightingOverlay.visible = false } }
+        Rectangle {
+            anchors.centerIn: parent; width: 520
+            height: Math.min(parent.height - 80, lCol.implicitHeight + 36)
+            radius: 14; color: root.panelC; border.width: 1; border.color: root.line2; clip: true
+            Column {
+                id: lCol; spacing: 14
+                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 20 }
+                Text { text: "Lighting"; color: root.txt; font.pixelSize: 15; font.bold: true }
+                Text {
+                    visible: (lightingOverlay.panel.error || "") !== "" || (lightingOverlay.panel.devices || []).length === 0
+                    width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: 12; color: root.muted
+                    text: lightingOverlay.panel.error
+                          ? ("OpenRazer: " + lightingOverlay.panel.error)
+                          : "No lightable Razer devices found — is the OpenRazer daemon running (and are you in the 'plugdev' group)?"
+                }
+                Repeater {
+                    model: lightingOverlay.panel.devices || []
+                    Column {
+                        id: devRow
+                        property string devId: modelData.id
+                        property real devBright: modelData.brightness
+                        property var devEffects: modelData.effects || []
+                        width: lCol.width; spacing: 8; topPadding: 4
+                        Row {
+                            spacing: 10
+                            Text { text: modelData.name; color: root.txt; font.pixelSize: 13; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: Math.round(devRow.devBright) + "%"; color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                            Rectangle { width: 26; height: 22; radius: 6; color: root.panel2; border.width: 1; border.color: root.line2; anchors.verticalCenter: parent.verticalCenter
+                                Text { anchors.centerIn: parent; text: "−"; color: root.txt; font.pixelSize: 14 }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: lightingOverlay.setBright(devRow.devId, Math.max(0, devRow.devBright - 10)) } }
+                            Rectangle { width: 26; height: 22; radius: 6; color: root.panel2; border.width: 1; border.color: root.line2; anchors.verticalCenter: parent.verticalCenter
+                                Text { anchors.centerIn: parent; text: "+"; color: root.txt; font.pixelSize: 14 }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: lightingOverlay.setBright(devRow.devId, Math.min(100, devRow.devBright + 10)) } }
+                        }
+                        Flow {
+                            width: parent.width; spacing: 8
+                            Repeater {
+                                model: lightingOverlay.swatches
+                                Rectangle {
+                                    width: 30; height: 30; radius: 7
+                                    color: modelData[0] === "Off" ? root.bg0 : Qt.rgba(modelData[1] / 255, modelData[2] / 255, modelData[3] / 255, 1)
+                                    border.width: 1; border.color: swMa.containsMouse ? root.txt : root.line2
+                                    Text { visible: modelData[0] === "Off"; anchors.centerIn: parent; text: "∅"; color: root.muted; font.pixelSize: 13 }
+                                    MouseArea { id: swMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: lightingOverlay.applyColor(devRow.devId, modelData) }
+                                }
+                            }
+                        }
+                        Flow {
+                            width: parent.width; spacing: 6
+                            Repeater {
+                                model: devRow.devEffects
+                                Chip { label: modelData; onPicked: lightingOverlay.applyEffect(devRow.devId, modelData) }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    width: parent.width; height: 38; radius: 9; color: root.greenDim; border.width: 1; border.color: root.green
+                    Text { anchors.centerIn: parent; text: "Done"; color: root.greenTxt; font.bold: true; font.pixelSize: 13 }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: lightingOverlay.visible = false }
                 }
             }
         }

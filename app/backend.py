@@ -18,6 +18,7 @@ from PySide6.QtCore import Property, QObject, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 import engine
+import lighting
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -326,6 +327,26 @@ class Backend(QObject):
             self.liveChanged.emit()
         return {"ok": ok, "error": None if ok else "couldn't reach the service"}
 
+    # ----- lighting (optional, OpenRazer) -----
+    @Slot(result="QVariant")
+    def lightingDevices(self) -> dict:
+        """Connected, lightable devices (or an error) for the lighting panel."""
+        d = lighting.devices()
+        if "_error" in d:
+            return {"error": d["_error"], "devices": []}
+        devs = [{"id": k, "name": v.get("name", k), "brightness": v.get("brightness", 100),
+                 "effects": v.get("effects", []), "error": v.get("_error")}
+                for k, v in d.items()]
+        return {"error": None, "devices": devs}
+
+    @Slot(str, str, int, int, int, result="QVariant")
+    def setLightEffect(self, dev: str, effect: str, r: int, g: int, b: int) -> dict:
+        return lighting.set_effect(dev, effect, (r, g, b))
+
+    @Slot(str, int, result="QVariant")
+    def setLightBrightness(self, dev: str, pct: int) -> dict:
+        return lighting.set_brightness(dev, pct)
+
     # ----- align / copy-layout -----
     @Slot(str)
     def copyToClipboard(self, text: str) -> None:
@@ -338,5 +359,5 @@ class Backend(QObject):
     def qaState(self) -> dict:
         names = ("KEYZER_DEV", "KEYZER_VIEW", "KEYZER_PROFILE", "KEYZER_SELECT",
                  "KEYZER_LIGHTING", "KEYZER_ALIGN", "KEYZER_APPAWARE", "KEYZER_RESULT",
-                 "KEYZER_DIALOG", "KEYZER_LIVE")
+                 "KEYZER_DIALOG", "KEYZER_LIVE", "KEYZER_LIGHTPANEL")
         return {n: os.environ.get(n, "") for n in names}

@@ -41,6 +41,9 @@ STATES = [
 ]
 BAD = ("error", "qml:", "unexpected token", "typeerror", "referenceerror",
        "cannot read", "is not a function", "is not defined", "traceback")
+# input-remapper logs benign `xmodmap` warnings that contain BAD substrings on a
+# headless box; they aren't real errors. Allow-list further known noise here.
+IGNORE = ("xmodmap",)
 
 
 def check(extra: dict) -> tuple[bool, list[str]]:
@@ -54,7 +57,8 @@ def check(extra: dict) -> tuple[bool, list[str]]:
         return False, ["timed out (offscreen render hung)"]
     lines = (p.stdout + p.stderr).splitlines()
     errs = [ln.strip() for ln in lines
-            if any(b in ln.lower() for b in BAD) and "xmodmap" not in ln.lower()]
+            if any(b in ln.lower() for b in BAD)
+            and not any(ig in ln.lower() for ig in IGNORE)]
     framed = os.path.exists(shot) and os.path.getsize(shot) > 0
     try:
         os.unlink(shot)

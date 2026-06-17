@@ -93,7 +93,7 @@ def preset_dir_name(nodes: list["evdev.InputDevice"]) -> str:
     return sorted((d.name for d in nodes), key=len)[0]
 
 
-def read_press(nodes, fd_to_dev, grabbed):
+def read_press(fd_to_dev):
     """Block until a real press arrives on one of the device nodes, or the user
     types a command. Returns ("event", payload) or ("cmd", text)."""
     fds = list(fd_to_dev) + [sys.stdin.fileno()]
@@ -112,17 +112,17 @@ def read_press(nodes, fd_to_dev, grabbed):
             for ev in events:
                 if ev.type in IGNORED_TYPES:
                     continue
-                if ev.type == ecodes.EV_KEY and ev.value == 1:  # key/button down
-                    return "event", {"type": ev.type, "code": ev.code,
-                                     "origin_hash": device_hash(dev),
-                                     "node": dev.path, "name": code_name(ev.type, ev.code)}
-                if (ev.type == ecodes.EV_REL and ev.value != 0
-                        and ev.code in _WHEEL_CODES):  # wheel only, never pointer motion
-                    return "event", {"type": ev.type, "code": ev.code,
-                                     "analog_threshold": 1 if ev.value > 0 else -1,
-                                     "origin_hash": device_hash(dev),
-                                     "node": dev.path, "name": code_name(ev.type, ev.code)}
-                # key-up / autorepeat / zero rel -> ignore, keep waiting
+                is_key_down = ev.type == ecodes.EV_KEY and ev.value == 1  # a button/key press
+                is_wheel = (ev.type == ecodes.EV_REL and ev.value != 0    # a scroll/tilt notch —
+                            and ev.code in _WHEEL_CODES)                  # never pointer motion
+                if not (is_key_down or is_wheel):
+                    continue  # key-up / autorepeat / zero rel — keep waiting
+                payload = {"type": ev.type, "code": ev.code,
+                           "origin_hash": device_hash(dev),
+                           "node": dev.path, "name": code_name(ev.type, ev.code)}
+                if is_wheel:  # store direction so input-remapper can match the notch
+                    payload["analog_threshold"] = 1 if ev.value > 0 else -1
+                return "event", payload
 
 
 def drain(nodes) -> None:
@@ -158,10 +158,10 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
         return None
 
     name = preset_dir_name(nodes)
-    hotspots = [k for view in dev_layout["views"].values() for k in view["keys"]
-                if not k.get("combo") and not k.get("unavailable")]
-    nskip = sum(1 for view in dev_layout["views"].values()
-                for k in view["keys"] if k.get("combo") or k.get("unavailable"))
+    all_keys = [k for view in dev_layout["views"].values() for k in view["keys"]]
+    # combos are derived from their members; unavailable controls emit no event
+    hotspots = [k for k in all_keys if not (k.get("combo") or k.get("unavailable"))]
+    nskip = len(all_keys) - len(hotspots)
     print(f"\n=== {dev_layout.get('name', dev_id)} — {len(hotspots)} keys "
           f"(device '{name}', {len(nodes)} nodes) ===")
     if nskip:
@@ -195,7 +195,7 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
             mark = "  *already set*" if kid in captured else ""
             print(f"  [{i + 1}/{len(hotspots)}] {kid:12} press the key …{mark}",
                   flush=True)
-            kind, payload = read_press(nodes, fd_to_dev, grabbed)
+            kind, payload = read_press(fd_to_dev)
             if kind == "cmd":
                 if payload in ("s", "skip"):
                     print("      skipped.")

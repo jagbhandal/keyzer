@@ -46,7 +46,7 @@ if not nodes:
 print(f"Watching {usb} on: {[d.path for d in nodes]}")
 print("Tilt the wheel LEFT, then RIGHT; scroll up/down; click a button — then Ctrl-C.\n")
 
-seen = {}
+seen = set()
 fds = {d.fd: d for d in nodes}
 try:
     while True:
@@ -60,7 +60,7 @@ try:
                 if isinstance(cname, (list, tuple)):
                     cname = "/".join(cname)
                 print(f"  {tname:7} {cname}  (code {ev.code})  value={ev.value}")
-                seen[(tname, str(cname), ev.code)] = ev.value
+                seen.add((tname, str(cname), ev.code))
 except KeyboardInterrupt:
     print("\n=== distinct events seen ===")
     for t, c, code in sorted(seen):

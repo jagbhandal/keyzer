@@ -34,12 +34,12 @@ PROFILES = CONFIG_DIR / "profiles.json"
 DEFAULT_CAPTURES = Path(__file__).resolve().parent.parent / "captures.default.json"
 
 
-def save_json(path: Path, data) -> None:
+def save_json(path: Path, data, *, indent: int = 2) -> None:
     """Write JSON atomically (temp file + os.replace) so a crash mid-write can't
-    corrupt the user's data."""
+    corrupt the file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2) + "\n")
+    tmp.write_text(json.dumps(data, indent=indent) + "\n")
     os.replace(tmp, path)
 
 
@@ -77,12 +77,8 @@ _LABELS = {
     "mute": "KEY_MUTE", "play": "KEY_PLAYPAUSE", "playpause": "KEY_PLAYPAUSE",
 }
 # Placeholder labels that have no single-output meaning yet -> skip with a reason.
-_UNSUPPORTED = {
-    "dpi +": "DPI is a hardware function — set it via OpenRazer, not a remap",
-    "dpi -": "DPI is a hardware function — set it via OpenRazer, not a remap",
-    "dpi1": "DPI is a hardware function — set it via OpenRazer, not a remap",
-    "dpi2": "DPI is a hardware function — set it via OpenRazer, not a remap",
-}
+_DPI_REASON = "DPI is a hardware function — set it via OpenRazer, not a remap"
+_UNSUPPORTED = {label: _DPI_REASON for label in ("dpi +", "dpi -", "dpi1", "dpi2")}
 # Punctuation/symbol chars -> X keysym names. input-remapper wants "minus", not
 # "-"; the literal char is rejected, so a combo like Ctrl+- must become Control_L+minus.
 _PUNCT = {
@@ -247,8 +243,7 @@ def build_preset(binds: dict, captures: dict, combos: dict | None = None) -> tup
 
 def write_preset(device_name: str, preset: str, mappings: list[dict]) -> Path:
     path = preset_path(device_name, preset)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(mappings, indent=4) + "\n")
+    save_json(path, mappings, indent=4)
     return path
 
 
@@ -289,7 +284,8 @@ def resolve_key(device_name: str, keys: list[str] | None = None) -> str:
 
 
 def sync_keyboard_layout() -> dict:
-    """Ensure input-remapper's ``xmodmap.json`` exists (and is current).
+    """Ensure input-remapper's ``xmodmap.json`` exists, refreshed from the current
+    keymap where possible (a stale file still counts as present).
 
     The root daemon validates every symbolic output (``w``, ``Control_L``,
     ``minus`` …) against the key-name map in ``xmodmap.json``. With no such file,
@@ -320,17 +316,14 @@ def sync_keyboard_layout() -> dict:
 
 
 def set_autoload(device_key: str, preset: str) -> None:
-    """Mark a preset to auto-load at login (config.json autoload: key -> preset)."""
+    """Mark a preset to auto-load at login (config.json autoload: key -> preset).
+
+    config.json is input-remapper's own file, so write it atomically — a crash
+    mid-write must not corrupt the daemon's config, only ours."""
     cfg = _ir_config_dir() / "config.json"
-    data = {}
-    if cfg.exists():
-        try:
-            data = json.loads(cfg.read_text())
-        except (json.JSONDecodeError, OSError):
-            data = {}
+    data = load_json(cfg, {}) or {}
     data.setdefault("autoload", {})[device_key] = preset
-    cfg.parent.mkdir(parents=True, exist_ok=True)
-    cfg.write_text(json.dumps(data, indent=4) + "\n")
+    save_json(cfg, data, indent=4)
 
 
 def load_captures(path: Path = CAPTURES) -> dict:

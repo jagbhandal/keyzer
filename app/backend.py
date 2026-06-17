@@ -317,20 +317,17 @@ class Backend(QObject):
         report = engine.apply_profile(profile, binds, engine.load_captures(), combos=self._combos)
         if "_error" in report:
             return {"ok": False, "message": report["_error"], "devices": []}
-        devices, all_ok, total = [], True, 0
-        for dev, r in report.items():
-            devices.append({"dev": dev, "name": self._layouts.get(dev, {}).get("name", dev),
-                            "ok": r.get("ok", False), "count": r.get("count", 0),
-                            "warnings": r.get("warnings", []), "error": r.get("error")})
-            all_ok = all_ok and r.get("ok", False)
-            total += r.get("count", 0)
-            if r.get("ok"):
-                self._live[dev] = profile
+        devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
+                    "ok": r.get("ok", False), "count": r.get("count", 0),
+                    "warnings": r.get("warnings", []), "error": r.get("error")}
+                   for d, r in report.items()]
         if not devices:
             return {"ok": False, "message": "Nothing to apply for this profile.", "devices": []}
+        self._live.update({d["dev"]: profile for d in devices if d["ok"]})
         self.liveChanged.emit()
-        msg = (f"{total} bindings live." if all_ok
-               else "Applied with issues — see below.")
+        total = sum(d["count"] for d in devices)
+        all_ok = all(d["ok"] for d in devices)
+        msg = f"{total} bindings live." if all_ok else "Applied with issues — see below."
         return {"ok": all_ok, "message": msg, "devices": devices}
 
     @Property("QVariant", notify=liveChanged)

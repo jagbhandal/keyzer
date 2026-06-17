@@ -23,6 +23,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import conftest  # noqa: F401  -- sys.path + offscreen + warning filter
 
@@ -236,15 +237,8 @@ class SanitizeAndPathTests(unittest.TestCase):
 
     def test_preset_path_honours_xdg_and_sanitizes(self):
         with tempfile.TemporaryDirectory() as tmp:
-            old = os.environ.get("XDG_CONFIG_HOME")
-            os.environ["XDG_CONFIG_HOME"] = tmp
-            try:
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
                 p = engine.preset_path("Razer/Naga", "keyzer-x")
-            finally:
-                if old is None:
-                    os.environ.pop("XDG_CONFIG_HOME", None)
-                else:
-                    os.environ["XDG_CONFIG_HOME"] = old
             self.assertTrue(str(p).startswith(tmp))
             self.assertIn("input-remapper-2", str(p))
             self.assertIn("Razer_Naga", str(p))   # '/' sanitised to '_'
@@ -286,18 +280,11 @@ class WritePresetTests(unittest.TestCase):
 
     def test_write_preset_array_round_trip(self):
         with tempfile.TemporaryDirectory() as tmp:
-            old = os.environ.get("XDG_CONFIG_HOME")
-            os.environ["XDG_CONFIG_HOME"] = tmp
-            try:
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
                 caps = {"TAR_01": {"type": 1, "code": 1, "origin_hash": "a1"}}
                 mappings, _ = engine.build_preset({"TAR_01": "Esc"}, caps)
                 path = engine.write_preset("Razer Razer Tartarus Pro",
                                            "keyzer-test", mappings)
-            finally:
-                if old is None:
-                    os.environ.pop("XDG_CONFIG_HOME", None)
-                else:
-                    os.environ["XDG_CONFIG_HOME"] = old
             self.assertTrue(path.exists())
             self.assertTrue(str(path).startswith(tmp))
             loaded = json.loads(path.read_text())
@@ -314,18 +301,11 @@ class CapturesOriginTests(unittest.TestCase):
     """
 
     def _origin_with_xdg(self, tmp: str) -> str:
-        old = os.environ.get("XDG_CONFIG_HOME")
-        os.environ["XDG_CONFIG_HOME"] = tmp
-        try:
+        with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
             # CAPTURES is computed at import time from the original XDG; recompute
             # the user path against the temp dir to mirror a fresh process.
             user = Path(tmp) / "keyzer" / "captures.json"
             return engine.captures_origin(user)
-        finally:
-            if old is None:
-                os.environ.pop("XDG_CONFIG_HOME", None)
-            else:
-                os.environ["XDG_CONFIG_HOME"] = old
 
     def test_origin_default_when_user_absent(self):
         with tempfile.TemporaryDirectory() as tmp:

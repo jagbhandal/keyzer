@@ -71,15 +71,12 @@ Rectangle {
     // hotspot (scoped to the view so cross-view dups, e.g. WASD on keypad + thumb,
     // aren't flagged when the partner is off-screen)
     readonly property var conflictKeys: {
-        var m = bindMap, vk = (viewObj && viewObj.keys) ? viewObj.keys : []
-        var counts = ({}), ids = []
-        for (var i = 0; i < vk.length; i++) {
-            var id = vk[i].id
-            if (m[id] !== undefined) { counts[m[id]] = (counts[m[id]] || 0) + 1; ids.push(id) }
-        }
-        var out = []
-        for (var n = 0; n < ids.length; n++) if (counts[m[ids[n]]] > 1) out.push(ids[n])
-        return out
+        var m = bindMap
+        var bound = ((viewObj && viewObj.keys) ? viewObj.keys : [])
+            .map(function (k) { return k.id })
+            .filter(function (id) { return m[id] !== undefined })
+        var counts = bound.reduce(function (c, id) { c[m[id]] = (c[m[id]] || 0) + 1; return c }, ({}))
+        return bound.filter(function (id) { return counts[m[id]] > 1 })
     }
     readonly property int boundCount: Object.keys(bindMap).length
 
@@ -112,11 +109,13 @@ Rectangle {
         }
     }
     // The skip warning for `key` in an apply report (the daemon drops binds it
-    // can't express), or "" if it applied cleanly.
+    // can't express), or "" if it applied cleanly. Warnings are prefixed
+    // "<hotspot>: …" or "<hotspot> = …"; match the exact token so a shorter id
+    // (TAR_TPAD_N) can't swallow a longer one's warning (TAR_TPAD_NE).
     function bindWarning(report, key) {
         return (report.devices || [])
             .reduce(function (all, d) { return all.concat(d.warnings || []) }, [])
-            .find(function (w) { return w.indexOf(key) === 0 }) || ""
+            .find(function (w) { return w.indexOf(key + ":") === 0 || w.indexOf(key + " ") === 0 }) || ""
     }
     function clearBinding() {
         if (selKey === "") return
@@ -140,6 +139,10 @@ Rectangle {
         var r = backend.stopAll()
         showToast(r.ok ? "Remapping stopped — devices back to default" : (r.error || "Stop failed"))
     }
+    // Keys that are modifiers on their own — a lone press of one isn't a binding.
+    readonly property var modifierKeys: [Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
+                                         Qt.Key_Super_L, Qt.Key_Super_R, Qt.Key_AltGr]
+    function isBareModifier(key) { return modifierKeys.indexOf(key) !== -1 }
     function keyLabel(event) {
         var parts = []
         if (event.modifiers & Qt.ControlModifier) parts.push("Ctrl")
@@ -149,11 +152,8 @@ Rectangle {
         named[Qt.Key_Escape] = "Esc"; named[Qt.Key_Tab] = "Tab"; named[Qt.Key_Space] = "Space"
         named[Qt.Key_Return] = "Enter"; named[Qt.Key_Enter] = "Enter"; named[Qt.Key_Backspace] = "Bksp"
         named[Qt.Key_Up] = "↑"; named[Qt.Key_Down] = "↓"; named[Qt.Key_Left] = "←"; named[Qt.Key_Right] = "→"
-        named[Qt.Key_F1] = "F1"; named[Qt.Key_F2] = "F2"; named[Qt.Key_F3] = "F3"; named[Qt.Key_F4] = "F4"
-        named[Qt.Key_F5] = "F5"; named[Qt.Key_F6] = "F6"; named[Qt.Key_F7] = "F7"; named[Qt.Key_F8] = "F8"
-        named[Qt.Key_F9] = "F9"; named[Qt.Key_F10] = "F10"; named[Qt.Key_F11] = "F11"; named[Qt.Key_F12] = "F12"
-        var mods = [Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta]
-        if (mods.indexOf(event.key) !== -1) return parts.join("+")
+        for (var fn = 1; fn <= 12; fn++) named[Qt.Key_F1 + (fn - 1)] = "F" + fn   // F1..F12 are contiguous
+        if (isBareModifier(event.key)) return parts.join("+")
         var k
         if (named[event.key] !== undefined) k = named[event.key]
         else if (event.key >= Qt.Key_A && event.key <= Qt.Key_Z) k = String.fromCharCode(event.key)   // base letter
@@ -1124,9 +1124,8 @@ Rectangle {
                         property string zone: ""
                         property var curEffects: {
                             if (zone === "") return modelData.effects || []
-                            for (var i = 0; i < devZones.length; i++)
-                                if (devZones[i].name === zone) return devZones[i].effects
-                            return []
+                            var z = devZones.find(function (zn) { return zn.name === zone })
+                            return z ? z.effects : []
                         }
                         width: lCol.width; spacing: 8; topPadding: 4
                         Row {
@@ -1195,9 +1194,7 @@ Rectangle {
             if (!root.listening) return
             event.accepted = true
             // wait past bare modifier presses so combos capture fully (Ctrl+1, Ctrl+Shift+1)
-            var mods = [Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
-                        Qt.Key_Super_L, Qt.Key_Super_R, Qt.Key_AltGr]
-            if (mods.indexOf(event.key) !== -1) return
+            if (root.isBareModifier(event.key)) return
             root.capValue = root.keyLabel(event)
             root.listening = false
         }

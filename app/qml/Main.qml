@@ -80,6 +80,56 @@ Rectangle {
         var a = (s.effect && s.effect.indexOf("breath") === 0) ? (0.3 + 0.55 * pulse) : 0.85
         return Qt.rgba(s.r / 255, s.g / 255, s.b / 255, a)
     }
+    // ---- canvas-native lighting mode (operates on the on-stage device, curDev) ----
+    property var lightInfo: ({ error: null, devices: [] })   // backend.lightingDevices() snapshot
+    property string lightZone: ""                            // selected zone ("" = whole device)
+    property real lightBright: 100
+    property bool lightSync: false                           // OpenRazer: mirror effects across all devices
+    property bool lcWheel: false                             // custom-colour wheel disclosed?
+    property real lcH: 0.33
+    property real lcS: 1.0
+    property real lcV: 1.0
+    readonly property color lcColor: Qt.hsva(lcH, lcS, lcV, 1)
+    readonly property var lightSwatches: [["Razer Green", 68, 214, 44], ["White", 255, 255, 255],
+        ["Red", 230, 40, 40], ["Blue", 40, 120, 255], ["Cyan", 34, 200, 255], ["Pink", 220, 40, 200],
+        ["Amber", 230, 170, 40], ["Off", 0, 0, 0]]
+    function lightDev() {           // the lightInfo entry for the on-stage device, or null
+        var ds = lightInfo.devices || []
+        for (var i = 0; i < ds.length; i++) if (ds[i].id === curDev) return ds[i]
+        return null
+    }
+    function lightZonesFor() {      // [{name,label,effects}] incl. "Whole device", for curDev
+        var d = lightDev(); if (!d) return []
+        return [{ name: "", label: "Whole device", effects: (d.effects || []) }].concat(d.zones || [])
+    }
+    function zoneLabel(z) { var zs = lightZonesFor(); for (var i = 0; i < zs.length; i++) if (zs[i].name === z) return zs[i].label; return z }
+    function curZoneEffects() { var zs = lightZonesFor(); for (var i = 0; i < zs.length; i++) if (zs[i].name === lightZone) return zs[i].effects || []; return [] }
+    function lightLabel() { var d = lightDev(); return (d ? d.name : curDev) + (lightZone ? " · " + zoneLabel(lightZone) : "") }
+    function enterLighting() { lightInfo = backend.lightingDevices(); lightZone = ""; lcWheel = false; var d = lightDev(); lightBright = d ? d.brightness : 100; lightSync = backend.lightingSync() }
+    function syncLightDevice() { if (lighting) { lightZone = ""; var d = lightDev(); lightBright = d ? d.brightness : 100 } }
+    function applyLightColor(sw) {     // sw = [name, r, g, b]
+        var eff = sw[0] === "Off" ? "none" : "static"
+        var r = backend.setLightEffect(curDev, eff, sw[1], sw[2], sw[3], lightZone)
+        if (r.ok && lightZone === "") recordLight(curDev, eff, sw[1], sw[2], sw[3])
+        showToast(r.ok ? (lightLabel() + " → " + sw[0]) : (r.error || "lighting failed"))
+    }
+    function applyLightEffect(eff) {
+        var s = lightState[curDev] || { r: 68, g: 214, b: 44 }    // reuse the chosen colour
+        var r = backend.setLightEffect(curDev, eff, s.r, s.g, s.b, lightZone)
+        if (r.ok && lightZone === "") recordLight(curDev, eff, s.r, s.g, s.b)
+        showToast(r.ok ? (lightLabel() + " → " + effectLabel(eff)) : (r.error || "lighting failed"))
+    }
+    function setLightBright(pct) { var r = backend.setLightBrightness(curDev, Math.round(pct)); if (!r.ok) showToast(r.error || "brightness failed") }
+    function pickLightWheel(mx, my) { var dx = mx - 75, dy = my - 75; lcS = Math.max(0, Math.min(1, Math.sqrt(dx * dx + dy * dy) / 72)); lcH = (Math.atan2(dy, dx) / (2 * Math.PI) + 1) % 1 }
+    function hex2(c) { var h = Math.round(c * 255).toString(16); return h.length < 2 ? "0" + h : h }
+    function openLightingDemo() {   // offscreen QA: drive the lighting inspector with sample devices
+        lightInfo = { error: null, devices: [
+            { id: "tartarus", name: "Razer Tartarus Pro", brightness: 80, effects: ["static", "reactive", "none"] },
+            { id: "naga", name: "Razer Naga Pro", brightness: 100, effects: ["static", "spectrum", "breath_single", "wave", "none"],
+              zones: [{ name: "logo", label: "Logo", effects: ["static", "spectrum", "breath_single", "none"] },
+                      { name: "scroll_wheel", label: "Scroll wheel", effects: ["static", "spectrum", "reactive", "none"] }] } ] }
+        switchDevice("naga"); lighting = true; lightBright = 100; lcWheel = true; lightSync = false
+    }
     property string dirtyText: "All changes saved"
     property var applyResult: null          // last Apply-to-hardware report
     property var capSummary: ({})            // per-device captured-key counts
@@ -112,7 +162,7 @@ Rectangle {
     function firstView(dev) { return backend.viewNames(dev)[0] }
     function selectKey(id) { selKey = id; capValue = ""; listening = false }
     function deselect() { selKey = ""; capValue = ""; listening = false }
-    function switchDevice(dev) { curDev = dev; curView = firstView(dev); deselect() }
+    function switchDevice(dev) { curDev = dev; curView = firstView(dev); deselect(); syncLightDevice() }
     function markDirty() { dirtyText = "● Unsaved → autosaving…"; dirtyTimer.restart() }
     function showToast(m) { toast.msg = m; toast.show() }
     function curBinding() { return bindMap[selKey] !== undefined ? bindMap[selKey] : "" }
@@ -222,7 +272,7 @@ Rectangle {
         if (q.KEYZER_DIALOG === "import") importDialog.open()
         if (q.KEYZER_LIVE) qaLive = true
         if (q.KEYZER_HINT) capSource = "default"
-        if (q.KEYZER_LIGHTPANEL) lightingOverlay.openDemo()
+        if (q.KEYZER_LIGHTPANEL) root.openLightingDemo()
     }
 
     Timer { id: dirtyTimer; interval: 1400; onTriggered: root.dirtyText = "All changes saved" }
@@ -365,7 +415,7 @@ Rectangle {
             border.color: root.glowColor()   // the real applied colour/effect, not a fake rainbow
         }
         HoverHandler { id: hov; cursorShape: root.aligning ? Qt.SizeAllCursor : Qt.PointingHandCursor }
-        TapHandler { enabled: !root.aligning; onTapped: hs.unavailable !== "" ? root.showToast(hs.unavailable) : root.selectKey(hs.k.id) }
+        TapHandler { enabled: !root.aligning && !root.lighting; onTapped: hs.unavailable !== "" ? root.showToast(hs.unavailable) : root.selectKey(hs.k.id) }
         DragHandler { enabled: root.aligning; target: hs; onActiveChanged: if (!active) root.setCoord(hs.k.id, hs.x, hs.y) }
     }
 
@@ -535,9 +585,9 @@ Rectangle {
             FlatSwitch {
                 anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"
                 enabled: backend.deps.openrazer; on: root.lighting
-                onToggled: { root.lighting = !root.lighting; if (root.lighting) lightingOverlay.open() }
+                onToggled: { root.lighting = !root.lighting; if (root.lighting) { root.aligning = false; root.deselect(); root.enterLighting() } }
             }
-            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; root.deselect() } }
+            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; if (root.aligning) root.lighting = false; root.deselect() } }
         }
     }
 
@@ -571,7 +621,8 @@ Rectangle {
                       ? " · " + root.conflictKeys.length + " share an output" : "")
                 color: root.conflictKeys.length > 0 ? root.amber : root.muted
             }
-            Text { text: "Preset: " + backend.presetNameFor(root.curProfile); color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+            Text { visible: !root.lighting; text: "Preset: " + backend.presetNameFor(root.curProfile); color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+            Text { visible: root.lighting; text: "Lighting: " + root.lightLabel() + " · " + Math.round(root.lightBright) + "%"; color: root.green; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         }
         Text { anchors { right: parent.right; rightMargin: 18; verticalCenter: parent.verticalCenter }text: root.dirtyText; color: root.muted; font.pixelSize: 12 }
     }
@@ -662,15 +713,160 @@ Rectangle {
             // empty state
             Column {
                 anchors { top: parent.top; topMargin: 60; horizontalCenter: parent.horizontalCenter }
-                spacing: 14; visible: root.selKey === ""
+                spacing: 14; visible: !root.lighting && root.selKey === ""
                 Text { anchors.horizontalCenter: parent.horizontalCenter; text: "⊕"; color: root.green; font.pixelSize: 40; opacity: 0.6 }
                 Text { horizontalAlignment: Text.AlignHCenter; text: "Select a key on the device\nto map it."; color: root.muted2; font.pixelSize: 13; lineHeight: 1.4 }
+            }
+
+            // ---------- lighting inspector (canvas-native mode) ----------
+            Flickable {
+                anchors { fill: parent; margins: 20 }
+                visible: root.lighting; clip: true
+                contentHeight: liCol.implicitHeight
+                Column {
+                    id: liCol
+                    width: parent.width; spacing: 14
+                    Text { text: "Lighting"; color: root.txt; font.pixelSize: 15; font.bold: true }
+                    Text { text: root.lightLabel(); color: root.green; font.pixelSize: 13; font.bold: true; visible: root.lightDev() !== null }
+                    Text {
+                        visible: root.lightDev() === null
+                        width: parent.width; wrapMode: Text.WordWrap; color: root.muted; font.pixelSize: 12; lineHeight: 1.35
+                        text: root.lightInfo.error
+                              ? ("OpenRazer: " + root.lightInfo.error)
+                              : ("No lighting for " + (root.device ? root.device.name : root.curDev) + " — is the OpenRazer daemon running and are you in the 'plugdev' group?")
+                    }
+                    Rectangle {   // Recheck (re-query OpenRazer)
+                        visible: root.lightDev() === null
+                        width: rcT.implicitWidth + 24; height: 28; radius: 7; color: root.panel2; border.width: 1; border.color: root.lineC
+                        Text { id: rcT; anchors.centerIn: parent; text: "↻ Recheck"; color: root.txt; font.pixelSize: 12 }
+                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.enterLighting() }
+                    }
+                    Column {
+                        visible: root.lightDev() !== null
+                        width: parent.width; spacing: 13
+                        // sync across devices (OpenRazer global setting) — surfaced, not forced
+                        FlatSwitch {
+                            label: "Sync all devices"; on: root.lightSync
+                            onToggled: { var r = backend.setLightingSync(!root.lightSync)
+                                if (r.ok) root.lightSync = !root.lightSync; else root.showToast(r.error || "sync failed") }
+                        }
+                        Text { width: parent.width; wrapMode: Text.WordWrap; color: root.muted2; font.pixelSize: 10
+                            text: root.lightSync ? "One look mirrors to every Razer device." : "Each device is controlled on its own." }
+                        // zones (only when the device exposes them; Tartarus shows none)
+                        Flow {
+                            visible: root.lightDev() && (root.lightDev().zones || []).length > 0
+                            width: parent.width; spacing: 6
+                            Repeater {
+                                model: root.lightZonesFor()
+                                Rectangle {
+                                    height: 26; width: zlt.implicitWidth + 20; radius: 7
+                                    color: root.lightZone === modelData.name ? root.greenDim : root.panel2
+                                    border.width: 1; border.color: root.lightZone === modelData.name ? root.green : root.lineC
+                                    Text { id: zlt; anchors.centerIn: parent; text: modelData.label; font.pixelSize: 11; font.bold: true
+                                        color: root.lightZone === modelData.name ? root.greenTxt : root.muted }
+                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.lightZone = modelData.name }
+                                }
+                            }
+                        }
+                        Text { text: "Brightness " + Math.round(root.lightBright) + "%"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1 }
+                        Rectangle {
+                            width: parent.width; height: 16; radius: 8; color: root.panel2; border.width: 1; border.color: root.line2
+                            Rectangle { anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                                width: Math.max(8, root.lightBright / 100 * parent.width); radius: 8; color: root.greenDim }
+                            Rectangle { width: 4; height: parent.height + 6; radius: 2; color: "white"
+                                y: -3; x: Math.min(parent.width - 4, root.lightBright / 100 * (parent.width - 4)) }
+                            MouseArea {
+                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                function setFrom(mx) { root.lightBright = Math.max(0, Math.min(100, Math.round(mx / width * 100))) }
+                                onPressed: function (m) { setFrom(m.x) }
+                                onPositionChanged: function (m) { if (pressed) setFrom(m.x) }
+                                onReleased: root.setLightBright(root.lightBright)
+                            }
+                        }
+                        Text { text: "COLOUR"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
+                        Flow {
+                            width: parent.width; spacing: 8
+                            Repeater {
+                                model: root.lightSwatches
+                                Rectangle {
+                                    width: 30; height: 30; radius: 7
+                                    color: modelData[0] === "Off" ? root.bg0 : Qt.rgba(modelData[1] / 255, modelData[2] / 255, modelData[3] / 255, 1)
+                                    border.width: 1; border.color: lsw.containsMouse ? root.txt : root.line2
+                                    Text { visible: modelData[0] === "Off"; anchors.centerIn: parent; text: "∅"; color: root.muted; font.pixelSize: 13 }
+                                    MouseArea { id: lsw; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                        onClicked: root.applyLightColor(modelData) }
+                                }
+                            }
+                        }
+                        Rectangle {   // custom-colour disclosure
+                            width: lcpT.implicitWidth + 26; height: 24; radius: 6
+                            color: root.lcWheel ? root.greenDim : root.panel2
+                            border.width: 1; border.color: root.lcWheel ? root.green : root.lineC
+                            Text { id: lcpT; anchors.centerIn: parent; text: "🎨 Custom colour"; font.pixelSize: 11; font.bold: true
+                                color: root.lcWheel ? root.greenTxt : root.muted }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.lcWheel = !root.lcWheel }
+                        }
+                        Column {
+                            visible: root.lcWheel; width: parent.width; spacing: 8
+                            Item {
+                                width: 150; height: 150
+                                Canvas {
+                                    anchors.fill: parent
+                                    onVisibleChanged: if (visible) requestPaint()
+                                    Component.onCompleted: requestPaint()
+                                    onPaint: {
+                                        var ctx = getContext("2d"), cx = width / 2, cy = height / 2, R = Math.min(cx, cy) - 3
+                                        ctx.clearRect(0, 0, width, height)
+                                        for (var a = 0; a < 360; a += 2) {
+                                            ctx.beginPath(); ctx.moveTo(cx, cy); ctx.arc(cx, cy, R, (a - 1) * Math.PI / 180, (a + 2) * Math.PI / 180); ctx.closePath()
+                                            ctx.fillStyle = Qt.hsva(a / 360, 1, 1, 1); ctx.fill()
+                                        }
+                                        var g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R)
+                                        g.addColorStop(0, Qt.rgba(1, 1, 1, 1)); g.addColorStop(1, Qt.rgba(1, 1, 1, 0))
+                                        ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.fill()
+                                    }
+                                }
+                                Rectangle { width: 12; height: 12; radius: 6; color: "transparent"; border.width: 2; border.color: "white"
+                                    x: 75 + Math.cos(root.lcH * 2 * Math.PI) * root.lcS * 72 - 6
+                                    y: 75 + Math.sin(root.lcH * 2 * Math.PI) * root.lcS * 72 - 6 }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.CrossCursor
+                                    onPressed: function (m) { root.pickLightWheel(m.x, m.y) }
+                                    onPositionChanged: function (m) { if (pressed) root.pickLightWheel(m.x, m.y) } }
+                            }
+                            Rectangle { width: parent.width; height: 30; radius: 7; color: root.lcColor; border.width: 1; border.color: root.line2
+                                Text { anchors.centerIn: parent; text: "#" + root.hex2(root.lcColor.r) + root.hex2(root.lcColor.g) + root.hex2(root.lcColor.b)
+                                    color: root.lcV > 0.55 ? "#101010" : "#f0f0f0"; font.pixelSize: 12; font.bold: true } }
+                            Rectangle {   // value slider
+                                width: parent.width; height: 16; radius: 8
+                                gradient: Gradient { orientation: Gradient.Horizontal
+                                    GradientStop { position: 0; color: "#000000" }
+                                    GradientStop { position: 1; color: Qt.hsva(root.lcH, root.lcS, 1, 1) } }
+                                Rectangle { width: 4; height: parent.height + 6; radius: 2; color: "white"; y: -3; x: root.lcV * (parent.width - 4) }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onPressed: function (m) { root.lcV = Math.max(0, Math.min(1, m.x / width)) }
+                                    onPositionChanged: function (m) { if (pressed) root.lcV = Math.max(0, Math.min(1, m.x / width)) } }
+                            }
+                            Rectangle { width: parent.width; height: 30; radius: 8; color: root.greenDim; border.width: 1; border.color: root.green
+                                Text { anchors.centerIn: parent; text: "Apply colour"; color: root.greenTxt; font.pixelSize: 12; font.bold: true }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.applyLightColor(["Custom", Math.round(root.lcColor.r * 255), Math.round(root.lcColor.g * 255), Math.round(root.lcColor.b * 255)]) } }
+                        }
+                        Text { text: "STYLE"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
+                        Flow {
+                            width: parent.width; spacing: 6
+                            Repeater {
+                                model: root.uniqueEffects(root.curZoneEffects())
+                                Chip { label: root.effectLabel(modelData); onPicked: root.applyLightEffect(modelData) }
+                            }
+                        }
+                    }
+                }
             }
 
             // assign body
             Column {
                 anchors { fill: parent; margins: 20 }
-                spacing: 16; visible: root.selKey !== ""
+                spacing: 16; visible: !root.lighting && root.selKey !== ""
 
                 Row {
                     spacing: 13; width: parent.width
@@ -687,30 +883,6 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter; spacing: 2
                         Text { text: root.selKey.replace(/_/g, " "); color: root.txt; font.pixelSize: 15; font.bold: true }
                         Text { text: "hotspot: " + root.selKey; color: root.muted; font.pixelSize: 12 }
-                    }
-                }
-
-                Column {
-                    width: parent.width; spacing: 9
-                    Text { text: "OUTPUT TYPE"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
-                    Item {
-                        id: seg
-                        width: parent.width; height: 34
-                        property string sel: "Key"
-                        Rectangle { anchors.fill: parent; radius: 10; color: root.panel2; border.width: 1; border.color: root.lineC }
-                        Row {
-                            anchors { fill: parent; margins: 3 }spacing: 2
-                            Repeater {
-                                model: ["Key", "Combo", "Macro", "Mouse", "Disable"]
-                                Rectangle {
-                                    width: (seg.width - 6 - 8) / 5; height: parent.height; radius: 7
-                                    color: seg.sel === modelData ? root.greenDim : "transparent"
-                                    Text { anchors.centerIn: parent; text: modelData; font.pixelSize: 11; font.bold: true; color: seg.sel === modelData ? root.greenTxt : root.muted }
-                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                        onClicked: { seg.sel = modelData; if (modelData === "Disable") { root.capValue = "Disabled"; root.listening = false } } }
-                                }
-                            }
-                        }
                     }
                 }
 
@@ -752,7 +924,7 @@ Rectangle {
                             Repeater {
                                 model: ["Esc", "Tab", "Shift", "Ctrl", "Alt", "Space", "Enter", "↑", "↓", "←", "→",
                                     "Q", "W", "E", "R", "F", "1", "2", "3", "LMB", "RMB", "MMB",
-                                    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]
+                                    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "Disable"]
                                 Chip { label: modelData; onPicked: { root.capValue = modelData; root.listening = false } }
                             }
                         }
@@ -1104,233 +1276,6 @@ Rectangle {
         }
     }
 
-    // ================= lighting panel (OpenRazer, optional) =================
-    Item {
-        id: lightingOverlay
-        anchors.fill: parent; visible: false; z: 110
-        property var panel: ({ error: null, devices: [] })
-        readonly property var swatches: [["Razer Green", 68, 214, 44], ["White", 255, 255, 255], ["Red", 230, 40, 40],
-            ["Blue", 40, 120, 255], ["Cyan", 34, 200, 255], ["Pink", 220, 40, 200], ["Amber", 230, 170, 40], ["Off", 0, 0, 0]]
-        function open() { panel = backend.lightingDevices(); visible = true }
-        function openDemo() {   // offscreen QA only
-            panel = { error: null, devices: [
-                { id: "tartarus", name: "Razer Tartarus Pro", brightness: 80, effects: ["static", "reactive", "none"] },
-                { id: "naga", name: "Razer Naga Pro", brightness: 100, _wheel: true, effects: ["static", "spectrum", "breath_single", "wave", "none"],
-                  zones: [{ name: "logo", label: "Logo", effects: ["static", "spectrum", "breath_single", "none"] },
-                          { name: "scroll_wheel", label: "Scroll wheel", effects: ["static", "spectrum", "reactive", "none"] }] } ] }
-            visible = true
-        }
-        function applyColor(devId, sw, zone) {
-            var eff = sw[0] === "Off" ? "none" : "static"
-            var r = backend.setLightEffect(devId, eff, sw[1], sw[2], sw[3], zone)
-            if (r.ok && zone === "") root.recordLight(devId, eff, sw[1], sw[2], sw[3])
-            showToast(r.ok ? (devId + (zone ? " " + zone : "") + " → " + sw[0]) : (r.error || "lighting failed"))
-        }
-        function applyEffect(devId, eff, zone) {
-            var s = root.lightState[devId] || { r: 68, g: 214, b: 44 }   // reuse the chosen colour, not a hardcoded green
-            var r = backend.setLightEffect(devId, eff, s.r, s.g, s.b, zone)
-            if (r.ok && zone === "") root.recordLight(devId, eff, s.r, s.g, s.b)
-            showToast(r.ok ? (devId + (zone ? " " + zone : "") + " → " + root.effectLabel(eff)) : (r.error || "lighting failed"))
-        }
-        function setBright(devId, pct) {
-            var r = backend.setLightBrightness(devId, Math.round(pct))   // no re-enumeration per change
-            if (!r.ok) showToast(r.error || "brightness failed")
-        }
-        Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.18)   // light scrim — keep the device visible
-            MouseArea { anchors.fill: parent; onClicked: lightingOverlay.visible = false } }
-        Rectangle {
-            anchors.centerIn: parent; width: 520
-            height: Math.min(parent.height - 80, lCol.implicitHeight + 36)
-            radius: 14; color: root.panelC; border.width: 1; border.color: root.line2; clip: true
-            Column {
-                id: lCol; spacing: 14
-                anchors { left: parent.left; right: parent.right; top: parent.top; margins: 20 }
-                Text { text: "Lighting"; color: root.txt; font.pixelSize: 15; font.bold: true }
-                Text {
-                    visible: (lightingOverlay.panel.error || "") !== "" || (lightingOverlay.panel.devices || []).length === 0
-                    width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: 12; color: root.muted
-                    text: lightingOverlay.panel.error
-                          ? ("OpenRazer: " + lightingOverlay.panel.error)
-                          : "No lightable Razer devices found — is the OpenRazer daemon running (and are you in the 'plugdev' group)?"
-                }
-                Repeater {
-                    model: lightingOverlay.panel.devices || []
-                    Column {
-                        id: devRow
-                        property string devId: modelData.id
-                        property real devBright: modelData.brightness
-                        property var devZones: modelData.zones || []
-                        property string zone: ""
-                        property var curEffects: {
-                            if (zone === "") return modelData.effects || []
-                            var z = devZones.find(function (zn) { return zn.name === zone })
-                            return z ? z.effects : []
-                        }
-                        // full custom-colour picker (hue/sat wheel + value)
-                        property bool showWheel: false
-                        property real selH: 0.33   // hue 0..1
-                        property real selS: 1.0    // saturation 0..1 (wheel radius)
-                        property real selV: 1.0    // value 0..1
-                        readonly property color selColor: Qt.hsva(selH, selS, selV, 1)
-                        function pickWheel(mx, my) {
-                            var dx = mx - 75, dy = my - 75
-                            selS = Math.max(0, Math.min(1, Math.sqrt(dx * dx + dy * dy) / 72))
-                            selH = (Math.atan2(dy, dx) / (2 * Math.PI) + 1) % 1
-                        }
-                        function hex2(c) { var h = Math.round(c * 255).toString(16); return h.length < 2 ? "0" + h : h }
-                        Component.onCompleted: if (modelData._wheel === true) showWheel = true
-                        width: lCol.width; spacing: 8; topPadding: 4
-                        Row {
-                            spacing: 10
-                            Text { text: modelData.name; color: root.txt; font.pixelSize: 13; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-                            Text { text: "Brightness " + Math.round(devRow.devBright) + "%"; color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                        }
-                        Rectangle {   // one brightness slider (drag), applied on release — no +/- steppers
-                            width: parent.width; height: 16; radius: 8; color: root.panel2; border.width: 1; border.color: root.line2
-                            Rectangle { anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
-                                width: Math.max(8, devRow.devBright / 100 * parent.width); radius: 8; color: root.greenDim }
-                            Rectangle { width: 4; height: parent.height + 6; radius: 2; color: "white"
-                                y: -3; x: Math.min(parent.width - 4, devRow.devBright / 100 * (parent.width - 4)) }
-                            MouseArea {
-                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                function setFrom(mx) { devRow.devBright = Math.max(0, Math.min(100, Math.round(mx / width * 100))) }
-                                onPressed: function (m) { setFrom(m.x) }
-                                onPositionChanged: function (m) { if (pressed) setFrom(m.x) }
-                                onReleased: lightingOverlay.setBright(devRow.devId, devRow.devBright)
-                            }
-                        }
-                        Flow {   // zone selector (Naga exposes independent zones)
-                            visible: devRow.devZones.length > 0
-                            width: parent.width; spacing: 6
-                            Repeater {
-                                model: [{ name: "", label: "All" }].concat(devRow.devZones)
-                                Rectangle {
-                                    height: 24; width: zt.implicitWidth + 18; radius: 6
-                                    color: devRow.zone === modelData.name ? root.greenDim : root.panel2
-                                    border.width: 1; border.color: devRow.zone === modelData.name ? root.green : root.lineC
-                                    Text { id: zt; anchors.centerIn: parent; text: modelData.label; font.pixelSize: 11; font.bold: true
-                                        color: devRow.zone === modelData.name ? root.greenTxt : root.muted }
-                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: devRow.zone = modelData.name }
-                                }
-                            }
-                        }
-                        Flow {
-                            width: parent.width; spacing: 8
-                            Repeater {
-                                model: lightingOverlay.swatches
-                                Rectangle {
-                                    width: 30; height: 30; radius: 7
-                                    color: modelData[0] === "Off" ? root.bg0 : Qt.rgba(modelData[1] / 255, modelData[2] / 255, modelData[3] / 255, 1)
-                                    border.width: 1; border.color: swMa.containsMouse ? root.txt : root.line2
-                                    Text { visible: modelData[0] === "Off"; anchors.centerIn: parent; text: "∅"; color: root.muted; font.pixelSize: 13 }
-                                    MouseArea { id: swMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                        onClicked: lightingOverlay.applyColor(devRow.devId, modelData, devRow.zone) }
-                                }
-                            }
-                        }
-                        Flow {
-                            width: parent.width; spacing: 6
-                            Repeater {
-                                model: root.uniqueEffects(devRow.curEffects)
-                                Chip { label: root.effectLabel(modelData); onPicked: lightingOverlay.applyEffect(devRow.devId, modelData, devRow.zone) }
-                            }
-                        }
-                        // ----- custom colour: hue/sat wheel + value -----
-                        Rectangle {
-                            width: cpTxt.implicitWidth + 26; height: 24; radius: 6
-                            color: devRow.showWheel ? root.greenDim : root.panel2
-                            border.width: 1; border.color: devRow.showWheel ? root.green : root.lineC
-                            Text { id: cpTxt; anchors.centerIn: parent; text: "🎨 Custom colour"; font.pixelSize: 11; font.bold: true
-                                color: devRow.showWheel ? root.greenTxt : root.muted }
-                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: devRow.showWheel = !devRow.showWheel }
-                        }
-                        Row {
-                            visible: devRow.showWheel
-                            spacing: 14
-                            Item {
-                                width: 150; height: 150
-                                Canvas {
-                                    anchors.fill: parent
-                                    onVisibleChanged: if (visible) requestPaint()
-                                    Component.onCompleted: requestPaint()
-                                    onPaint: {
-                                        var ctx = getContext("2d")
-                                        var cx = width / 2, cy = height / 2, R = Math.min(cx, cy) - 3
-                                        ctx.clearRect(0, 0, width, height)
-                                        for (var a = 0; a < 360; a += 2) {
-                                            ctx.beginPath(); ctx.moveTo(cx, cy)
-                                            ctx.arc(cx, cy, R, (a - 1) * Math.PI / 180, (a + 2) * Math.PI / 180)
-                                            ctx.closePath()
-                                            ctx.fillStyle = Qt.hsva(a / 360, 1, 1, 1); ctx.fill()
-                                        }
-                                        var g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R)
-                                        g.addColorStop(0, Qt.rgba(1, 1, 1, 1)); g.addColorStop(1, Qt.rgba(1, 1, 1, 0))
-                                        ctx.fillStyle = g
-                                        ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.fill()
-                                    }
-                                }
-                                Rectangle {   // picked-point marker
-                                    width: 12; height: 12; radius: 6; color: "transparent"
-                                    border.width: 2; border.color: "white"
-                                    x: 75 + Math.cos(devRow.selH * 2 * Math.PI) * devRow.selS * 72 - 6
-                                    y: 75 + Math.sin(devRow.selH * 2 * Math.PI) * devRow.selS * 72 - 6
-                                }
-                                MouseArea {
-                                    anchors.fill: parent; cursorShape: Qt.CrossCursor
-                                    onPressed: function (m) { devRow.pickWheel(m.x, m.y) }
-                                    onPositionChanged: function (m) { if (pressed) devRow.pickWheel(m.x, m.y) }
-                                }
-                            }
-                            Column {
-                                spacing: 8; width: 150; anchors.verticalCenter: parent.verticalCenter
-                                Rectangle {   // live preview + hex
-                                    width: parent.width; height: 34; radius: 7; color: devRow.selColor
-                                    border.width: 1; border.color: root.line2
-                                    Text { anchors.centerIn: parent
-                                        text: "#" + devRow.hex2(devRow.selColor.r) + devRow.hex2(devRow.selColor.g) + devRow.hex2(devRow.selColor.b)
-                                        color: devRow.selV > 0.55 ? "#101010" : "#f0f0f0"; font.pixelSize: 12; font.bold: true }
-                                }
-                                Text { text: "Brightness"; color: root.muted2; font.pixelSize: 10 }
-                                Rectangle {   // value slider
-                                    width: parent.width; height: 16; radius: 8
-                                    gradient: Gradient {
-                                        orientation: Gradient.Horizontal
-                                        GradientStop { position: 0; color: "#000000" }
-                                        GradientStop { position: 1; color: Qt.hsva(devRow.selH, devRow.selS, 1, 1) }
-                                    }
-                                    Rectangle {
-                                        width: 4; height: parent.height + 6; radius: 2; color: "white"
-                                        y: -3; x: devRow.selV * (parent.width - 4)
-                                    }
-                                    MouseArea {
-                                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                        onPressed: function (m) { devRow.selV = Math.max(0, Math.min(1, m.x / width)) }
-                                        onPositionChanged: function (m) { if (pressed) devRow.selV = Math.max(0, Math.min(1, m.x / width)) }
-                                    }
-                                }
-                                Rectangle {   // apply
-                                    width: parent.width; height: 30; radius: 8; color: root.greenDim; border.width: 1; border.color: root.green
-                                    Text { anchors.centerIn: parent; text: "Apply colour"; color: root.greenTxt; font.pixelSize: 12; font.bold: true }
-                                    MouseArea {
-                                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                        onClicked: lightingOverlay.applyColor(devRow.devId,
-                                            ["Custom", Math.round(devRow.selColor.r * 255),
-                                                       Math.round(devRow.selColor.g * 255),
-                                                       Math.round(devRow.selColor.b * 255)], devRow.zone)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Rectangle {
-                    width: parent.width; height: 38; radius: 9; color: root.greenDim; border.width: 1; border.color: root.green
-                    Text { anchors.centerIn: parent; text: "Done"; color: root.greenTxt; font.bold: true; font.pixelSize: 13 }
-                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: lightingOverlay.visible = false }
-                }
-            }
-        }
-    }
 
     // key capture for Listen
     Item {

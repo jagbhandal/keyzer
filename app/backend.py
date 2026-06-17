@@ -366,6 +366,15 @@ class Backend(QObject):
     def setLightBrightness(self, dev: str, pct: int) -> dict:
         return lighting.set_brightness(dev, pct)
 
+    @Slot(result=bool)
+    def lightingSync(self) -> bool:
+        """Whether OpenRazer is mirroring effects across all Chroma devices."""
+        return lighting.sync_enabled()
+
+    @Slot(bool, result="QVariant")
+    def setLightingSync(self, enabled: bool) -> dict:
+        return lighting.set_sync(enabled)
+
     # ----- align / copy-layout -----
     @Slot(str)
     def copyToClipboard(self, text: str) -> None:

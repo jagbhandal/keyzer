@@ -112,6 +112,31 @@ def devices() -> dict:
     return out
 
 
+def sync_enabled() -> bool:
+    """Is OpenRazer mirroring effects across all Chroma devices? (a global setting)"""
+    mgr, err = _manager()
+    if err or mgr is None:
+        return False
+    try:
+        return bool(mgr.sync_effects)
+    except Exception:
+        return False
+
+
+def set_sync(enabled: bool) -> dict:
+    """Turn cross-device effect syncing on/off (OpenRazer remembers it globally)."""
+    if not available():
+        return {"ok": False, "error": "openrazer not installed"}
+    mgr, err = _manager()
+    if err:
+        return {"ok": False, "error": err}
+    try:
+        mgr.sync_effects = bool(enabled)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True}
+
+
 def set_brightness(kid: str, pct: float) -> dict:
     if not available():
         return {"ok": False, "error": "openrazer not installed"}

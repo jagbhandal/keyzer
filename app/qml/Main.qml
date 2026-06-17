@@ -401,14 +401,11 @@ Rectangle {
         Row {
             anchors { left: parent.left; leftMargin: 18; verticalCenter: parent.verticalCenter }
             spacing: 11
-            Canvas {
+            Image {
                 width: 30; height: 30; anchors.verticalCenter: parent.verticalCenter
-                onPaint: {
-                    var c = getContext("2d"); c.reset()
-                    c.strokeStyle = "#44d62c"; c.lineWidth = 3; c.lineJoin = "round"; c.lineCap = "round"
-                    c.beginPath(); c.moveTo(5, 23); c.lineTo(11, 7); c.lineTo(14, 17); c.lineTo(15, 12)
-                    c.lineTo(16, 17); c.lineTo(20, 7); c.lineTo(26, 23); c.stroke()
-                }
+                source: backend.imageUrl("packaging/keyzer-mark.svg")
+                sourceSize.width: 60; sourceSize.height: 60   // rasterise the SVG at 2x for crisp edges
+                smooth: true; fillMode: Image.PreserveAspectFit
             }
             Column {
                 anchors.verticalCenter: parent.verticalCenter; spacing: 0

@@ -1,4 +1,6 @@
-# KEYZER
+<p align="center">
+  <img src="docs/keyzer-wordmark.png" alt="KEYZER" width="300">
+</p>
 
 **A visual key-remapper for Razer peripherals on Linux** — click your device's keys on a picture of the device and bind them, Synapse-style, on top of the open-source [input-remapper](https://github.com/sezanzeb/input-remapper) engine.
 

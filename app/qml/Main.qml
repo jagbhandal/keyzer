@@ -756,7 +756,7 @@ Rectangle {
                             Rectangle { width: 4; height: parent.height + 6; radius: 2; color: "white"
                                 y: -3; x: Math.min(parent.width - 4, root.lightBright / 100 * (parent.width - 4)) }
                             MouseArea {
-                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor; preventStealing: true
                                 function setFrom(mx) { root.lightBright = Math.max(0, Math.min(100, Math.round(mx / width * 100))) }
                                 onPressed: function (m) { setFrom(m.x) }
                                 onPositionChanged: function (m) { if (pressed) setFrom(m.x) }
@@ -809,7 +809,7 @@ Rectangle {
                                 Rectangle { width: 12; height: 12; radius: 6; color: "transparent"; border.width: 2; border.color: "white"
                                     x: 75 + Math.cos(root.lcH * 2 * Math.PI) * root.lcS * 72 - 6
                                     y: 75 + Math.sin(root.lcH * 2 * Math.PI) * root.lcS * 72 - 6 }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.CrossCursor
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.CrossCursor; preventStealing: true
                                     onPressed: function (m) { root.pickLightWheel(m.x, m.y) }
                                     onPositionChanged: function (m) { if (pressed) root.pickLightWheel(m.x, m.y) } }
                             }
@@ -822,7 +822,7 @@ Rectangle {
                                     GradientStop { position: 0; color: "#000000" }
                                     GradientStop { position: 1; color: Qt.hsva(root.lcH, root.lcS, 1, 1) } }
                                 Rectangle { width: 4; height: parent.height + 6; radius: 2; color: "white"; y: -3; x: root.lcV * (parent.width - 4) }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; preventStealing: true
                                     onPressed: function (m) { root.lcV = Math.max(0, Math.min(1, m.x / width)) }
                                     onPositionChanged: function (m) { if (pressed) root.lcV = Math.max(0, Math.min(1, m.x / width)) } }
                             }

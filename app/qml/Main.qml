@@ -1090,7 +1090,7 @@ Rectangle {
         function openDemo() {   // offscreen QA only
             panel = { error: null, devices: [
                 { id: "tartarus", name: "Razer Tartarus Pro", brightness: 80, effects: ["static", "reactive", "none"] },
-                { id: "naga", name: "Razer Naga Pro", brightness: 100, effects: ["static", "spectrum", "breath_single", "wave", "none"],
+                { id: "naga", name: "Razer Naga Pro", brightness: 100, _wheel: true, effects: ["static", "spectrum", "breath_single", "wave", "none"],
                   zones: [{ name: "logo", label: "Logo", effects: ["static", "spectrum", "breath_single", "none"] },
                           { name: "scroll_wheel", label: "Scroll wheel", effects: ["static", "spectrum", "reactive", "none"] }] } ] }
             visible = true
@@ -1137,6 +1137,19 @@ Rectangle {
                             var z = devZones.find(function (zn) { return zn.name === zone })
                             return z ? z.effects : []
                         }
+                        // full custom-colour picker (hue/sat wheel + value)
+                        property bool showWheel: false
+                        property real selH: 0.33   // hue 0..1
+                        property real selS: 1.0    // saturation 0..1 (wheel radius)
+                        property real selV: 1.0    // value 0..1
+                        readonly property color selColor: Qt.hsva(selH, selS, selV, 1)
+                        function pickWheel(mx, my) {
+                            var dx = mx - 75, dy = my - 75
+                            selS = Math.max(0, Math.min(1, Math.sqrt(dx * dx + dy * dy) / 72))
+                            selH = (Math.atan2(dy, dx) / (2 * Math.PI) + 1) % 1
+                        }
+                        function hex2(c) { var h = Math.round(c * 255).toString(16); return h.length < 2 ? "0" + h : h }
+                        Component.onCompleted: if (modelData._wheel === true) showWheel = true
                         width: lCol.width; spacing: 8; topPadding: 4
                         Row {
                             spacing: 10
@@ -1183,6 +1196,92 @@ Rectangle {
                             Repeater {
                                 model: devRow.curEffects
                                 Chip { label: modelData; onPicked: lightingOverlay.applyEffect(devRow.devId, modelData, devRow.zone) }
+                            }
+                        }
+                        // ----- custom colour: hue/sat wheel + value -----
+                        Rectangle {
+                            width: cpTxt.implicitWidth + 26; height: 24; radius: 6
+                            color: devRow.showWheel ? root.greenDim : root.panel2
+                            border.width: 1; border.color: devRow.showWheel ? root.green : root.lineC
+                            Text { id: cpTxt; anchors.centerIn: parent; text: "🎨 Custom colour"; font.pixelSize: 11; font.bold: true
+                                color: devRow.showWheel ? root.greenTxt : root.muted }
+                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: devRow.showWheel = !devRow.showWheel }
+                        }
+                        Row {
+                            visible: devRow.showWheel
+                            spacing: 14
+                            Item {
+                                width: 150; height: 150
+                                Canvas {
+                                    anchors.fill: parent
+                                    onVisibleChanged: if (visible) requestPaint()
+                                    Component.onCompleted: requestPaint()
+                                    onPaint: {
+                                        var ctx = getContext("2d")
+                                        var cx = width / 2, cy = height / 2, R = Math.min(cx, cy) - 3
+                                        ctx.clearRect(0, 0, width, height)
+                                        for (var a = 0; a < 360; a += 2) {
+                                            ctx.beginPath(); ctx.moveTo(cx, cy)
+                                            ctx.arc(cx, cy, R, (a - 1) * Math.PI / 180, (a + 2) * Math.PI / 180)
+                                            ctx.closePath()
+                                            ctx.fillStyle = Qt.hsva(a / 360, 1, 1, 1); ctx.fill()
+                                        }
+                                        var g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R)
+                                        g.addColorStop(0, Qt.rgba(1, 1, 1, 1)); g.addColorStop(1, Qt.rgba(1, 1, 1, 0))
+                                        ctx.fillStyle = g
+                                        ctx.beginPath(); ctx.arc(cx, cy, R, 0, 2 * Math.PI); ctx.fill()
+                                    }
+                                }
+                                Rectangle {   // picked-point marker
+                                    width: 12; height: 12; radius: 6; color: "transparent"
+                                    border.width: 2; border.color: "white"
+                                    x: 75 + Math.cos(devRow.selH * 2 * Math.PI) * devRow.selS * 72 - 6
+                                    y: 75 + Math.sin(devRow.selH * 2 * Math.PI) * devRow.selS * 72 - 6
+                                }
+                                MouseArea {
+                                    anchors.fill: parent; cursorShape: Qt.CrossCursor
+                                    onPressed: function (m) { devRow.pickWheel(m.x, m.y) }
+                                    onPositionChanged: function (m) { if (pressed) devRow.pickWheel(m.x, m.y) }
+                                }
+                            }
+                            Column {
+                                spacing: 8; width: 150; anchors.verticalCenter: parent.verticalCenter
+                                Rectangle {   // live preview + hex
+                                    width: parent.width; height: 34; radius: 7; color: devRow.selColor
+                                    border.width: 1; border.color: root.line2
+                                    Text { anchors.centerIn: parent
+                                        text: "#" + devRow.hex2(devRow.selColor.r) + devRow.hex2(devRow.selColor.g) + devRow.hex2(devRow.selColor.b)
+                                        color: devRow.selV > 0.55 ? "#101010" : "#f0f0f0"; font.pixelSize: 12; font.bold: true }
+                                }
+                                Text { text: "Brightness"; color: root.muted2; font.pixelSize: 10 }
+                                Rectangle {   // value slider
+                                    width: parent.width; height: 16; radius: 8
+                                    gradient: Gradient {
+                                        orientation: Gradient.Horizontal
+                                        GradientStop { position: 0; color: "#000000" }
+                                        GradientStop { position: 1; color: Qt.hsva(devRow.selH, devRow.selS, 1, 1) }
+                                    }
+                                    Rectangle {
+                                        width: 4; height: parent.height + 6; radius: 2; color: "white"
+                                        y: -3; x: devRow.selV * (parent.width - 4)
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onPressed: function (m) { devRow.selV = Math.max(0, Math.min(1, m.x / width)) }
+                                        onPositionChanged: function (m) { if (pressed) devRow.selV = Math.max(0, Math.min(1, m.x / width)) }
+                                    }
+                                }
+                                Rectangle {   // apply
+                                    width: parent.width; height: 30; radius: 8; color: root.greenDim; border.width: 1; border.color: root.green
+                                    Text { anchors.centerIn: parent; text: "Apply colour"; color: root.greenTxt; font.pixelSize: 12; font.bold: true }
+                                    MouseArea {
+                                        anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                        onClicked: lightingOverlay.applyColor(devRow.devId,
+                                            ["Custom", Math.round(devRow.selColor.r * 255),
+                                                       Math.round(devRow.selColor.g * 255),
+                                                       Math.round(devRow.selColor.b * 255)], devRow.zone)
+                                    }
+                                }
                             }
                         }
                     }

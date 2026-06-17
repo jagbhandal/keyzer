@@ -82,8 +82,8 @@ Rectangle {
 
     // ---------- logic ----------
     function firstView(dev) { return backend.viewNames(dev)[0] }
-    function selectKey(id) { selKey = id; capValue = "" }
-    function deselect() { selKey = ""; capValue = "" }
+    function selectKey(id) { selKey = id; capValue = ""; listening = false }
+    function deselect() { selKey = ""; capValue = ""; listening = false }
     function switchDevice(dev) { curDev = dev; curView = firstView(dev); deselect() }
     function markDirty() { dirtyText = "● Unsaved → autosaving…"; dirtyTimer.restart() }
     function showToast(m) { toast.msg = m; toast.show() }
@@ -95,6 +95,7 @@ Rectangle {
 
     function applyBinding() {
         if (selKey === "") return
+        listening = false                                     // committing ends listen mode
         var v = capValue !== "" ? capValue : curBinding()
         if (v === "" || v === "—") { showToast("Pick a binding first"); return }
         backend.setBinding(curProfile, curDev, selKey, v)
@@ -119,6 +120,7 @@ Rectangle {
     }
     function clearBinding() {
         if (selKey === "") return
+        listening = false
         backend.clearBinding(curProfile, curDev, selKey)
         capValue = ""; markDirty()
         var r = backend.applyToHardware(curProfile, curDev)
@@ -179,6 +181,7 @@ Rectangle {
         if (q.KEYZER_LIGHTING === "1") lighting = true
         if (q.KEYZER_ALIGN === "1") aligning = true
         if (q.KEYZER_SELECT) selectKey(q.KEYZER_SELECT)
+        if (q.KEYZER_LISTEN === "1") { if (selKey === "") selectKey("TAR_08"); listening = true }
         if (q.KEYZER_RESULT) {   // QA: render the apply-result overlay with sample data
             root.applyResult = { ok: false, message: "Applied with issues — see below.", devices: [
                 { dev: "tartarus", name: "Razer Tartarus Pro", ok: true, count: 21,
@@ -679,7 +682,7 @@ Rectangle {
                                     color: seg.sel === modelData ? root.greenDim : "transparent"
                                     Text { anchors.centerIn: parent; text: modelData; font.pixelSize: 11; font.bold: true; color: seg.sel === modelData ? root.greenTxt : root.muted }
                                     MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                        onClicked: { seg.sel = modelData; if (modelData === "Disable") root.capValue = "Disabled" } }
+                                        onClicked: { seg.sel = modelData; if (modelData === "Disable") { root.capValue = "Disabled"; root.listening = false } } }
                                 }
                             }
                         }
@@ -701,14 +704,21 @@ Rectangle {
                                 border.width: 1; border.color: root.listening ? root.green : root.line2
                                 Text {
                                     anchors.centerIn: parent
-                                    text: root.listening ? "press…" : (root.capValue !== "" ? root.capValue : (root.curBinding() !== "" ? root.curBinding() : "—"))
+                                    text: root.listening
+                                          ? (root.capValue !== "" ? root.capValue : "press a key…")
+                                          : (root.capValue !== "" ? root.capValue : (root.curBinding() !== "" ? root.curBinding() : "—"))
                                     color: root.listening ? root.green : root.txt; font.pixelSize: 18; font.bold: true
                                 }
                             }
                             Rectangle {
-                                width: 80; height: 54; radius: 10; color: root.greenDim; border.width: 1; border.color: root.green
-                                Text { anchors.centerIn: parent; text: "Listen"; color: root.greenTxt; font.pixelSize: 13; font.bold: true }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.listening = true; keyCatcher.forceActiveFocus() } }
+                                width: 80; height: 54; radius: 10
+                                color: root.listening ? root.green : root.greenDim
+                                border.width: 1; border.color: root.green
+                                Text { anchors.centerIn: parent; text: root.listening ? "Stop" : "Listen"; color: root.greenTxt; font.pixelSize: 13; font.bold: true }
+                                MouseArea {
+                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: { root.listening = !root.listening; if (root.listening) keyCatcher.forceActiveFocus() }
+                                }
                             }
                         }
                         Text { text: "QUICK PICK"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
@@ -718,7 +728,7 @@ Rectangle {
                                 model: ["Esc", "Tab", "Shift", "Ctrl", "Alt", "Space", "Enter", "↑", "↓", "←", "→",
                                     "Q", "W", "E", "R", "F", "1", "2", "3", "LMB", "RMB", "MMB",
                                     "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]
-                                Chip { label: modelData; onPicked: root.capValue = modelData }
+                                Chip { label: modelData; onPicked: { root.capValue = modelData; root.listening = false } }
                             }
                         }
                     }
@@ -1193,10 +1203,12 @@ Rectangle {
         Keys.onPressed: function(event) {
             if (!root.listening) return
             event.accepted = true
-            // wait past bare modifier presses so combos capture fully (Ctrl+1, Ctrl+Shift+1)
+            if (event.key === Qt.Key_Escape) { root.listening = false; return }  // stop (use the Esc chip to bind Escape)
+            // skip bare modifier presses so combos capture fully (Ctrl+1, Ctrl+Shift+1)
             if (root.isBareModifier(event.key)) return
             root.capValue = root.keyLabel(event)
-            root.listening = false
+            // stay in listen mode — keep capturing (last press wins) until the
+            // user stops via Stop, Esc, Bind, or selecting another hotspot.
         }
     }
     // copy-layout placeholder (drag-align wired in next phase)

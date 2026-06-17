@@ -24,6 +24,7 @@ BASE = {"QT_QPA_PLATFORM": "offscreen", "QT_QUICK_BACKEND": "software", "QSG_REN
 STATES = [
     ("tartarus / keypad", {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "main"}),
     ("tartarus / keypad + selected", {"KEYZER_DEV": "tartarus", "KEYZER_SELECT": "TAR_08"}),
+    ("tartarus / listening (sticky)", {"KEYZER_DEV": "tartarus", "KEYZER_SELECT": "TAR_08", "KEYZER_LISTEN": "1"}),
     ("tartarus / keypad + align", {"KEYZER_DEV": "tartarus", "KEYZER_ALIGN": "1"}),
     ("tartarus / thumb (8-way)", {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "thumb"}),
     ("tartarus / thumb + align", {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "thumb", "KEYZER_ALIGN": "1"}),

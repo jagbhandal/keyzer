@@ -13,4 +13,7 @@ __pycache__/
 node_modules/
 dist-app/
 
+# Internal marketing collateral — kept locally, never published
+docs/marketing/
+
 # Note: dist/keyzer.html is committed on purpose (openable prototype build)

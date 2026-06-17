@@ -52,6 +52,34 @@ Rectangle {
     property bool appAware: true
     property bool listening: false
     property int litStep: 0
+    // last lighting applied per device (drives the TRUTHFUL on-device preview);
+    // OpenRazer can't read the active effect back, so this is KEYZER's own record.
+    property var lightState: ({})
+    function effectLabel(tok) {
+        return ({ "static": "Solid", "breath_single": "Pulse", "breath_dual": "Pulse",
+                  "breath_random": "Pulse", "spectrum": "Rainbow", "reactive": "React to keys",
+                  "wave": "Wave", "none": "Off" })[tok] || tok
+    }
+    function uniqueEffects(list) {   // collapse duplicate labels (the 3 breath_* -> one "Pulse")
+        var seen = ({}), out = []
+        for (var i = 0; i < (list || []).length; i++) {
+            var lbl = effectLabel(list[i])
+            if (!seen[lbl]) { seen[lbl] = 1; out.push(list[i]) }
+        }
+        return out
+    }
+    function recordLight(dev, eff, r, g, b) {           // reassign (not mutate) so bindings refresh
+        var m = Object.assign({}, lightState); m[dev] = { effect: eff, r: r, g: g, b: b }; lightState = m
+    }
+    // colour the on-device glow with what's actually applied: steady for Solid,
+    // breathing for Pulse, hue-cycling only for Rainbow, dark for Off.
+    function glowColor() {
+        var s = lightState[curDev]
+        if (!s || s.effect === "none") return Qt.rgba(0, 0, 0, 0)
+        if (s.effect === "spectrum") return Qt.hsla(((litStep * 8) % 360) / 360, 0.9, 0.55, 0.9)
+        var a = (s.effect && s.effect.indexOf("breath") === 0) ? (0.3 + 0.55 * pulse) : 0.85
+        return Qt.rgba(s.r / 255, s.g / 255, s.b / 255, a)
+    }
     property string dirtyText: "All changes saved"
     property var applyResult: null          // last Apply-to-hardware report
     property var capSummary: ({})            // per-device captured-key counts
@@ -334,7 +362,7 @@ Rectangle {
             anchors.fill: parent; radius: 9
             color: "transparent"
             border.width: 2
-            border.color: Qt.hsla((((hs.litIndex * 22) + (root.litStep * 8)) % 360) / 360, 0.9, 0.55, 0.9)
+            border.color: root.glowColor()   // the real applied colour/effect, not a fake rainbow
         }
         HoverHandler { id: hov; cursorShape: root.aligning ? Qt.SizeAllCursor : Qt.PointingHandCursor }
         TapHandler { enabled: !root.aligning; onTapped: hs.unavailable !== "" ? root.showToast(hs.unavailable) : root.selectKey(hs.k.id) }
@@ -1081,7 +1109,7 @@ Rectangle {
         id: lightingOverlay
         anchors.fill: parent; visible: false; z: 110
         property var panel: ({ error: null, devices: [] })
-        readonly property var swatches: [["Razer", 68, 214, 44], ["White", 255, 255, 255], ["Red", 230, 40, 40],
+        readonly property var swatches: [["Razer Green", 68, 214, 44], ["White", 255, 255, 255], ["Red", 230, 40, 40],
             ["Blue", 40, 120, 255], ["Cyan", 34, 200, 255], ["Pink", 220, 40, 200], ["Amber", 230, 170, 40], ["Off", 0, 0, 0]]
         function open() { panel = backend.lightingDevices(); visible = true }
         function openDemo() {   // offscreen QA only
@@ -1093,18 +1121,22 @@ Rectangle {
             visible = true
         }
         function applyColor(devId, sw, zone) {
-            var r = backend.setLightEffect(devId, sw[0] === "Off" ? "none" : "static", sw[1], sw[2], sw[3], zone)
+            var eff = sw[0] === "Off" ? "none" : "static"
+            var r = backend.setLightEffect(devId, eff, sw[1], sw[2], sw[3], zone)
+            if (r.ok && zone === "") root.recordLight(devId, eff, sw[1], sw[2], sw[3])
             showToast(r.ok ? (devId + (zone ? " " + zone : "") + " → " + sw[0]) : (r.error || "lighting failed"))
         }
         function applyEffect(devId, eff, zone) {
-            var r = backend.setLightEffect(devId, eff, 68, 214, 44, zone)
-            showToast(r.ok ? (devId + (zone ? " " + zone : "") + " → " + eff) : (r.error || "lighting failed"))
+            var s = root.lightState[devId] || { r: 68, g: 214, b: 44 }   // reuse the chosen colour, not a hardcoded green
+            var r = backend.setLightEffect(devId, eff, s.r, s.g, s.b, zone)
+            if (r.ok && zone === "") root.recordLight(devId, eff, s.r, s.g, s.b)
+            showToast(r.ok ? (devId + (zone ? " " + zone : "") + " → " + root.effectLabel(eff)) : (r.error || "lighting failed"))
         }
         function setBright(devId, pct) {
-            var r = backend.setLightBrightness(devId, pct)
-            if (r.ok) open(); else showToast(r.error || "brightness failed")
+            var r = backend.setLightBrightness(devId, Math.round(pct))   // no re-enumeration per change
+            if (!r.ok) showToast(r.error || "brightness failed")
         }
-        Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.55)
+        Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.18)   // light scrim — keep the device visible
             MouseArea { anchors.fill: parent; onClicked: lightingOverlay.visible = false } }
         Rectangle {
             anchors.centerIn: parent; width: 520
@@ -1151,13 +1183,21 @@ Rectangle {
                         Row {
                             spacing: 10
                             Text { text: modelData.name; color: root.txt; font.pixelSize: 13; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
-                            Text { text: Math.round(devRow.devBright) + "%"; color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                            Rectangle { width: 26; height: 22; radius: 6; color: root.panel2; border.width: 1; border.color: root.line2; anchors.verticalCenter: parent.verticalCenter
-                                Text { anchors.centerIn: parent; text: "−"; color: root.txt; font.pixelSize: 14 }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: lightingOverlay.setBright(devRow.devId, Math.max(0, devRow.devBright - 10)) } }
-                            Rectangle { width: 26; height: 22; radius: 6; color: root.panel2; border.width: 1; border.color: root.line2; anchors.verticalCenter: parent.verticalCenter
-                                Text { anchors.centerIn: parent; text: "+"; color: root.txt; font.pixelSize: 14 }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: lightingOverlay.setBright(devRow.devId, Math.min(100, devRow.devBright + 10)) } }
+                            Text { text: "Brightness " + Math.round(devRow.devBright) + "%"; color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+                        }
+                        Rectangle {   // one brightness slider (drag), applied on release — no +/- steppers
+                            width: parent.width; height: 16; radius: 8; color: root.panel2; border.width: 1; border.color: root.line2
+                            Rectangle { anchors { left: parent.left; top: parent.top; bottom: parent.bottom }
+                                width: Math.max(8, devRow.devBright / 100 * parent.width); radius: 8; color: root.greenDim }
+                            Rectangle { width: 4; height: parent.height + 6; radius: 2; color: "white"
+                                y: -3; x: Math.min(parent.width - 4, devRow.devBright / 100 * (parent.width - 4)) }
+                            MouseArea {
+                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                function setFrom(mx) { devRow.devBright = Math.max(0, Math.min(100, Math.round(mx / width * 100))) }
+                                onPressed: function (m) { setFrom(m.x) }
+                                onPositionChanged: function (m) { if (pressed) setFrom(m.x) }
+                                onReleased: lightingOverlay.setBright(devRow.devId, devRow.devBright)
+                            }
                         }
                         Flow {   // zone selector (Naga exposes independent zones)
                             visible: devRow.devZones.length > 0
@@ -1191,8 +1231,8 @@ Rectangle {
                         Flow {
                             width: parent.width; spacing: 6
                             Repeater {
-                                model: devRow.curEffects
-                                Chip { label: modelData; onPicked: lightingOverlay.applyEffect(devRow.devId, modelData, devRow.zone) }
+                                model: root.uniqueEffects(devRow.curEffects)
+                                Chip { label: root.effectLabel(modelData); onPicked: lightingOverlay.applyEffect(devRow.devId, modelData, devRow.zone) }
                             }
                         }
                         // ----- custom colour: hue/sat wheel + value -----

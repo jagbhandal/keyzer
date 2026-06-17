@@ -386,7 +386,7 @@ class Backend(QObject):
     @Slot(result="QVariant")
     def qaState(self) -> dict:
         names = ("KEYZER_DEV", "KEYZER_VIEW", "KEYZER_PROFILE", "KEYZER_SELECT",
-                 "KEYZER_LIGHTING", "KEYZER_ALIGN", "KEYZER_APPAWARE", "KEYZER_RESULT",
+                 "KEYZER_LIGHTING", "KEYZER_ALIGN", "KEYZER_RESULT",
                  "KEYZER_DIALOG", "KEYZER_LIVE", "KEYZER_LIGHTPANEL", "KEYZER_HINT",
                  "KEYZER_LISTEN")
         return {n: os.environ.get(n, "") for n in names}

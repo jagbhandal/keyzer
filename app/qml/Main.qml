@@ -49,7 +49,6 @@ Rectangle {
     property string capValue: ""
     property bool aligning: false
     property bool lighting: false
-    property bool appAware: true
     property bool listening: false
     property int litStep: 0
     // last lighting applied per device (drives the TRUTHFUL on-device preview);
@@ -255,7 +254,6 @@ Rectangle {
         if (q.KEYZER_DEV) switchDevice(q.KEYZER_DEV)
         if (q.KEYZER_VIEW) curView = q.KEYZER_VIEW
         if (q.KEYZER_PROFILE) curProfile = q.KEYZER_PROFILE
-        if (q.KEYZER_APPAWARE) appAware = (q.KEYZER_APPAWARE === "1")
         if (q.KEYZER_LIGHTING === "1") lighting = true
         if (q.KEYZER_ALIGN === "1") aligning = true
         if (q.KEYZER_SELECT) selectKey(q.KEYZER_SELECT)
@@ -581,7 +579,6 @@ Rectangle {
                 }
                 MouseArea { id: lpMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.stopHardware() }
             }
-            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "APP-AWARE"; on: root.appAware; onToggled: root.appAware = !root.appAware }
             FlatSwitch {
                 anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"
                 enabled: backend.deps.openrazer; on: root.lighting
@@ -676,25 +673,8 @@ Rectangle {
                         onChosen: root.switchDevice(modelData)
                     }
                 }
-                Item { width: 1; height: 12 }
-                Text { visible: root.appAware; text: "APP-AWARE RULES"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.5; bottomPadding: 4 }
-                Column {
-                    visible: root.appAware; width: parent.width; spacing: 6
-                    Repeater {
-                        model: [["blender", "Work"], ["steam_app_*", "Gaming"], ["default →", "Gaming"]]
-                        Rectangle {
-                            width: parent.width; height: 30; radius: 8; color: root.panelC; border.width: 1; border.color: root.lineC
-                            Row {
-                                anchors { left: parent.left; leftMargin: 9; verticalCenter: parent.verticalCenter }spacing: 8
-                                Text { text: modelData[0]; color: (index === 2 ? root.muted2 : root.green); font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                                Text { visible: index < 2; text: "→"; color: root.muted2; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                                Text { text: modelData[1]; color: root.txt; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
-                            }
-                        }
-                    }
-                }
                 Text {
-                    width: parent.width; wrapMode: Text.WordWrap; topPadding: 10
+                    width: parent.width; wrapMode: Text.WordWrap; topPadding: 16
                     text: root.aligning
                           ? "Drag each hotspot onto its real key (switch views too), then Copy layout."
                           : "Click a key on the device, then assign a binding — it writes to your input-remapper preset."

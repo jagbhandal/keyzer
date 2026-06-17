@@ -1,8 +1,8 @@
 # KEYZER
 
-**A modern, visual key-remapper for Razer peripherals on Linux** — click your device's keys on a picture of the device and bind them, Synapse-style, on top of the open-source [input-remapper](https://github.com/sezanzeb/input-remapper) engine.
+**A visual key-remapper for Razer peripherals on Linux** — click your device's keys on a picture of the device and bind them, Synapse-style, on top of the open-source [input-remapper](https://github.com/sezanzeb/input-remapper) engine.
 
-Razer Synapse doesn't exist on Linux, and input-remapper's stock editor is powerful but unintuitive. KEYZER gives you the workflow you actually want: see your real device, click a key, pick a binding.
+Razer Synapse doesn't exist on Linux, and input-remapper's stock editor makes you map raw event codes by hand. KEYZER gives you the workflow you actually want: see your real device, click a key, pick a binding.
 
 ![KEYZER](docs/screenshots/keyzer.png)
 
@@ -88,10 +88,10 @@ KEYZER talks to input-remapper only through its CLI / preset files / DBus — ne
 
 - [x] Visual UI: device images + clickable hotspots, assign panel, profiles, views, theme
 - [x] Dependency-aware startup (engine + OpenRazer detection)
-- [ ] `capture.py` — record the real evdev code each key emits (fills `layouts.json`)
-- [ ] Generate input-remapper presets from a KEYZER profile + reload the daemon
+- [x] `capture.py` — records the real evdev `(type, code)` each key emits
+- [x] Generate input-remapper presets from a profile and reload the daemon (`engine.py`)
+- [x] OpenRazer lighting control (per-zone Chroma effects + brightness)
 - [ ] App-aware profile switching (GNOME/Wayland active-window)
-- [ ] OpenRazer lighting control (per-profile Chroma)
 - [ ] `.deb` package (`Depends: input-remapper, python3-pyside6.*`, `Recommends: openrazer-meta`)
 
 ## Disclaimer

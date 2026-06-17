@@ -27,24 +27,18 @@ A mouse's thumb buttons are on its *side*, so they foreshorten badly from straig
 
 Each hotspot is aligned on the view where the button is actually visible.
 
-## evdev codes (the one missing piece)
+## evdev codes
 
-`layouts.json` currently has geometry only. To actually remap, each hotspot needs the **evdev code its physical key emits**. That comes from a one-time capture on the real hardware:
+`layouts.json` carries geometry; the evdev code each physical key emits comes from a one-time capture on the real hardware:
 
-- `capture.py` (planned) uses `python-evdev` to read each device; you press each key once and it records the code, filling in `layouts.json`.
+- `capture.py` reads each device read-only via python-evdev — you press each key once and it records the `(type, code)` plus an `origin_hash` into `~/.config/keyzer/captures.json`. A portable default map ships at the repo root (`captures.default.json`) so a fresh clone works before you calibrate. `engine.build_preset` joins those captures with a profile's binds into the input-remapper preset.
 - Razer device notes from discovery:
   - Tartarus Pro keys land on `event12`; thumb stick/mouse on `event14`.
   - Naga Pro: pointer/main buttons on `event3`/`mouse0`; keyboard-type interfaces on `event4`/`event5` (the thumb grid often emits number-row keycodes).
 
-## App shell (decision pending)
+## App shell
 
-Candidates, in order of fit for a Synapse-faithful look:
-
-- **Tauri** (web UI + Rust core) — smallest `.deb`, reuses this prototype's HTML/CSS directly. Recommended.
-- **Electron** — simplest, heaviest.
-- **Qt/QML (PySide6)** — native, tight integration with the Python evdev/input-remapper ecosystem.
-
-The prototype is intentionally plain HTML/CSS/JS so it can graft onto Tauri or Electron with little rework.
+PySide6 6.10 + QML, hosted in a QQuickView (`app/main.py`). Native to the Python evdev / input-remapper ecosystem, no web runtime to ship, and Qt's scene graph carries the Synapse-style visuals (`app/qml/Main.qml`). The engine and lighting are driven as black boxes. The `prototype/` directory keeps the original HTML/CSS mock that pinned down the visual language.
 
 ## Platform notes (target: Ubuntu 26.04, Wayland + GNOME)
 

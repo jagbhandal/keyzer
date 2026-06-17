@@ -130,7 +130,11 @@ def set_brightness(kid: str, pct: float) -> dict:
 
 def set_effect(kid: str, effect: str, color=(68, 214, 44), color2=(34, 200, 255),
                *, direction: str = "left", react_ms: int = 1000, zone: str = "") -> dict:
-    """Apply an effect to the whole device (zone="") or one zone. color is (r,g,b)."""
+    """Apply an effect to the whole device (zone="") or one zone. color is (r,g,b).
+
+    Covers OpenRazer's full effect set: the extra args (color2, direction,
+    react_ms) drive the dual-breath, wave, and reactive effects. The UI only
+    offers an effect after fx.has() confirms the device supports it."""
     if not available():
         return {"ok": False, "error": "openrazer not installed"}
     mgr, err = _manager()

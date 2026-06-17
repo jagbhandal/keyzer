@@ -188,18 +188,30 @@ class Backend(QObject):
             self._save()
             self.profilesChanged.emit()
 
-    @Slot(str, result="QVariant")
-    def createProfile(self, name: str) -> dict:
-        name = name.strip()
+    def _reject_name(self, name: str, *, allow: str | None = None) -> dict | None:
+        """Validation shared by the name-taking mutators: an error dict if ``name``
+        is empty or already taken (``allow`` exempts one existing name, for rename),
+        else None."""
         if not name:
             return {"ok": False, "error": "Name can't be empty"}
-        if name in self._profiles:
+        if name in self._profiles and name != allow:
             return {"ok": False, "error": "That name is already taken"}
-        self._profiles[name] = {d: {} for d in self._layouts}
-        self._active = name
+        return None
+
+    def _commit(self) -> None:
+        """Persist the profile set and notify the UI — the tail of every mutation."""
         self._save()
         self.profilesChanged.emit()
         self.bindingsChanged.emit()
+
+    @Slot(str, result="QVariant")
+    def createProfile(self, name: str) -> dict:
+        name = name.strip()
+        if err := self._reject_name(name):
+            return err
+        self._profiles[name] = {d: {} for d in self._layouts}
+        self._active = name
+        self._commit()
         return {"ok": True, "name": name}
 
     @Slot(str, str, result="QVariant")
@@ -207,16 +219,12 @@ class Backend(QObject):
         new = new.strip()
         if old not in self._profiles:
             return {"ok": False, "error": "No such profile"}
-        if not new:
-            return {"ok": False, "error": "Name can't be empty"}
-        if new != old and new in self._profiles:
-            return {"ok": False, "error": "That name is already taken"}
+        if err := self._reject_name(new, allow=old):
+            return err
         self._profiles = {new if k == old else k: v for k, v in self._profiles.items()}
         if self._active == old:
             self._active = new
-        self._save()
-        self.profilesChanged.emit()
-        self.bindingsChanged.emit()
+        self._commit()
         return {"ok": True, "name": new}
 
     @Slot(str, str, result="QVariant")
@@ -224,15 +232,11 @@ class Backend(QObject):
         new = new.strip()
         if src not in self._profiles:
             return {"ok": False, "error": "No such profile"}
-        if not new:
-            return {"ok": False, "error": "Name can't be empty"}
-        if new in self._profiles:
-            return {"ok": False, "error": "That name is already taken"}
+        if err := self._reject_name(new):
+            return err
         self._profiles[new] = copy.deepcopy(self._profiles[src])
         self._active = new
-        self._save()
-        self.profilesChanged.emit()
-        self.bindingsChanged.emit()
+        self._commit()
         return {"ok": True, "name": new}
 
     @Slot(str, result="QVariant")
@@ -244,9 +248,7 @@ class Backend(QObject):
         del self._profiles[name]
         if self._active == name:
             self._active = next(iter(self._profiles))
-        self._save()
-        self.profilesChanged.emit()
-        self.bindingsChanged.emit()
+        self._commit()
         return {"ok": True}
 
     @Slot(str, result=str)
@@ -278,9 +280,7 @@ class Backend(QObject):
         self._profiles[name] = {d: {hk: str(hv) for hk, hv in v.items()}
                                 for d, v in data["binds"].items() if isinstance(v, dict)}
         self._active = name
-        self._save()
-        self.profilesChanged.emit()
-        self.bindingsChanged.emit()
+        self._commit()
         return {"ok": True, "name": name}
 
     # ----- engine: capture status + real remapping -----

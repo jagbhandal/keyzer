@@ -215,8 +215,10 @@ Rectangle {
         property string binding: ""
         property bool selected: false
         property bool conflict: false
+        property string unavailable: ""
         property int litIndex: 0
         width: k.w; height: k.h
+        opacity: hs.unavailable !== "" ? 0.45 : 1
         Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
         Rectangle {
             id: hit
@@ -231,16 +233,19 @@ Rectangle {
         }
         Rectangle {
             id: pill
-            visible: hs.binding !== "" || hs.selected
+            visible: hs.binding !== "" || hs.selected || hs.unavailable !== ""
             anchors.centerIn: parent
             width: Math.max(26, pillTxt.implicitWidth + 14); height: 24; radius: 6
             color: Qt.rgba(0.03, 0.035, 0.024, 0.86)
             border.width: 1
-            border.color: hs.conflict ? root.amber : (hs.selected ? root.green : root.alpha(root.green, 0.45))
+            border.color: hs.unavailable !== "" ? root.line2
+                        : hs.conflict ? root.amber
+                        : hs.selected ? root.green : root.alpha(root.green, 0.45)
             Text {
                 id: pillTxt; anchors.centerIn: parent
-                text: hs.binding !== "" ? hs.binding : (hs.selected ? "·" : "")
-                color: hs.conflict ? root.amber : root.green; font.pixelSize: 14; font.bold: true
+                text: hs.unavailable !== "" ? "n/a" : (hs.binding !== "" ? hs.binding : (hs.selected ? "·" : ""))
+                color: hs.unavailable !== "" ? root.muted2 : (hs.conflict ? root.amber : root.green)
+                font.pixelSize: 14; font.bold: true
             }
         }
         Rectangle {
@@ -252,7 +257,7 @@ Rectangle {
             border.color: Qt.hsla((((hs.litIndex * 22) + (root.litStep * 8)) % 360) / 360, 0.9, 0.55, 0.9)
         }
         HoverHandler { id: hov; cursorShape: root.aligning ? Qt.SizeAllCursor : Qt.PointingHandCursor }
-        TapHandler { enabled: !root.aligning; onTapped: root.selectKey(hs.k.id) }
+        TapHandler { enabled: !root.aligning; onTapped: hs.unavailable !== "" ? root.showToast(hs.unavailable) : root.selectKey(hs.k.id) }
         DragHandler { enabled: root.aligning; target: hs; onActiveChanged: if (!active) root.setCoord(hs.k.id, hs.x, hs.y) }
     }
 
@@ -711,6 +716,7 @@ Rectangle {
                             binding: root.bindMap[modelData.id] !== undefined ? root.bindMap[modelData.id] : ""
                             selected: root.selKey === modelData.id
                             conflict: root.conflictKeys.indexOf(modelData.id) >= 0
+                            unavailable: modelData.unavailable || ""
                         }
                     }
                 }

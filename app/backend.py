@@ -47,7 +47,7 @@ def _default_profiles() -> dict:
             },
             "naga": {
                 "NAGA_L": "LMB", "NAGA_R": "RMB", "NAGA_WHL": "MMB",
-                "NAGA_WHL_L": "Prev", "NAGA_WHL_R": "Next", "NAGA_DPI1": "DPI +", "NAGA_DPI2": "DPI -",
+                "NAGA_DPI1": "DPI +", "NAGA_DPI2": "DPI -",
                 "NAGA_01": "1", "NAGA_02": "2", "NAGA_03": "3", "NAGA_04": "4", "NAGA_05": "5",
                 "NAGA_06": "6", "NAGA_07": "Q", "NAGA_08": "E", "NAGA_09": "R",
                 "NAGA_10": "F", "NAGA_11": "G", "NAGA_12": "T",
@@ -102,6 +102,10 @@ class Backend(QObject):
         self._combos = {dev: {k["id"]: k["combo"] for v in lay["views"].values()
                               for k in v["keys"] if k.get("combo")}
                         for dev, lay in self._layouts.items()}
+        # controls with no Linux event (e.g. Naga wheel tilt) — not bindable
+        self._unavailable = {dev: {k["id"] for v in lay["views"].values()
+                                   for k in v["keys"] if k.get("unavailable")}
+                             for dev, lay in self._layouts.items()}
         self._deps = _detect_deps()
         self._live = {}     # dev -> profile currently injected (KEYZER-tracked; daemon can't report it)
         self._load_profiles()
@@ -304,7 +308,9 @@ class Backend(QObject):
         # only push binds for hotspots that still exist in the layout — drops
         # orphans (e.g. removed thumb-pad diagonals) so they can't create
         # duplicate/conflicting input-remapper mappings.
-        binds = {dev: {h: v for h, v in (b or {}).items() if h in self._hotspot_ids.get(dev, set())}
+        binds = {dev: {h: v for h, v in (b or {}).items()
+                       if h in self._hotspot_ids.get(dev, set())
+                       and h not in self._unavailable.get(dev, set())}
                  for dev, b in self._profiles.get(profile, {}).items()}
         report = engine.apply_profile(profile, binds, engine.load_captures(), combos=self._combos)
         if "_error" in report:

@@ -1,0 +1,50 @@
+name: Device request
+description: Ask for a new Razer device to be supported — or contribute one.
+title: "[Device] <model name>"
+labels: ["device-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Supporting a new device is mostly **data, not code** — geometry in
+        [`layouts.json`](../../layouts.json) plus a captured key map from
+        `app/capture.py`. A PR is very welcome; otherwise the details below help
+        someone add it.
+  - type: input
+    id: model
+    attributes:
+      label: Device model
+      placeholder: e.g. Razer Tartarus V2
+    validations:
+      required: true
+  - type: input
+    id: usb
+    attributes:
+      label: USB ID (vendor:product)
+      description: "Run: `lsusb | grep -i 1532`"
+      placeholder: "1532:xxxx"
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - keypad
+        - mouse
+        - keyboard
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Buttons/zones, a link to a clean product image, whether you can test/capture, etc.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Can you help?
+      options:
+        - label: I have the hardware and can run `app/capture.py` to capture the key map
+        - label: I'd be willing to open a PR adding it to layouts.json

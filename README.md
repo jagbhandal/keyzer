@@ -66,7 +66,7 @@ KEYZER needs two things, both packaged on Ubuntu/Debian: the **input-remapper** 
 **TL;DR** (Ubuntu/Debian) — clone, run the installer, launch:
 
 ```bash
-git clone https://github.com/<you>/keyzer.git && cd keyzer && ./install.sh && python3 app/main.py
+git clone https://github.com/jagbhandal/keyzer.git && cd keyzer && ./install.sh && python3 app/main.py
 ```
 
 ### Ubuntu / Debian (recommended)
@@ -78,7 +78,7 @@ sudo apt install input-remapper \
   python3-pyside6.qtsvg python3-pyside6.qtdbus
 
 # get KEYZER
-git clone https://github.com/<you>/keyzer.git
+git clone https://github.com/jagbhandal/keyzer.git
 cd keyzer
 python3 app/main.py
 ```

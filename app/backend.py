@@ -113,11 +113,14 @@ class Backend(QObject):
     def _load_profiles(self) -> None:
         """Restore saved profiles, or seed the defaults on first run."""
         saved = engine.load_json(engine.PROFILES)
+        self._settings = {}   # persisted UI prefs (e.g. lighting mode on)
         if isinstance(saved, dict) and isinstance(saved.get("profiles"), dict) and saved["profiles"]:
             self._profiles = saved["profiles"]
             self._active = saved.get("active")
             if isinstance(saved.get("live"), dict):
                 self._live = saved["live"]   # presets persist in the daemon across restarts
+            if isinstance(saved.get("settings"), dict):
+                self._settings = saved["settings"]
         else:
             self._profiles = _default_profiles()
             self._active = "Gaming"
@@ -128,7 +131,18 @@ class Backend(QObject):
     def _save(self) -> None:
         engine.save_json(engine.PROFILES,
                          {"version": 1, "active": self._active,
-                          "live": self._live, "profiles": self._profiles})
+                          "live": self._live, "settings": self._settings,
+                          "profiles": self._profiles})
+
+    @Slot(str, "QVariant", result="QVariant")
+    def getSetting(self, key: str, default):
+        """Read a persisted UI preference (default if unset)."""
+        return self._settings.get(key, default)
+
+    @Slot(str, "QVariant")
+    def setSetting(self, key: str, value) -> None:
+        self._settings[key] = value
+        self._save()
 
     # ----- geometry (single source of truth) -----
     @Property("QVariant", constant=True)

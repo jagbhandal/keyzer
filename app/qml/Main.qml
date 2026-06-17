@@ -271,6 +271,8 @@ Rectangle {
         if (q.KEYZER_LIVE) qaLive = true
         if (q.KEYZER_HINT) capSource = "default"
         if (q.KEYZER_LIGHTPANEL) root.openLightingDemo()
+        // restore the lighting view-mode across restarts (persisted pref)
+        if (backend.getSetting("lighting", false) === true && !root.lighting) { root.lighting = true; root.enterLighting() }
     }
 
     Timer { id: dirtyTimer; interval: 1400; onTriggered: root.dirtyText = "All changes saved" }
@@ -582,7 +584,7 @@ Rectangle {
             FlatSwitch {
                 anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"
                 enabled: backend.deps.openrazer; on: root.lighting
-                onToggled: { root.lighting = !root.lighting; if (root.lighting) { root.aligning = false; root.deselect(); root.enterLighting() } }
+                onToggled: { root.lighting = !root.lighting; backend.setSetting("lighting", root.lighting); if (root.lighting) { root.aligning = false; root.deselect(); root.enterLighting() } }
             }
             FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; if (root.aligning) root.lighting = false; root.deselect() } }
         }

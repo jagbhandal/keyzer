@@ -79,6 +79,13 @@ class SeedAndPersistenceTests(_IsolatedBackendTest):
         self.assertEqual(b2.activeProfile, "Streaming")
         self.assertEqual(b2.bindings["Streaming"]["tartarus"]["TAR_01"], "F5")
 
+    def test_settings_persist_across_reinstantiation(self):
+        b1 = self.new_backend()
+        self.assertFalse(b1.getSetting("lighting", False))   # default when unset
+        b1.setSetting("lighting", True)
+        b2 = self.new_backend()
+        self.assertTrue(b2.getSetting("lighting", False))    # survived a restart
+
     def test_active_profile_repaired_if_invalid(self):
         # Write a profiles.json whose 'active' points at a deleted profile.
         engine.save_json(engine.PROFILES, {

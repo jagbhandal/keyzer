@@ -5,7 +5,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 say() { printf '\n\033[1;32m==>\033[0m %s\n' "$*"; }
 
-REQUIRED=(input-remapper
+REQUIRED=(input-remapper x11-xserver-utils python3-evdev
           python3-pyside6.qtquick python3-pyside6.qtquickcontrols2
           python3-pyside6.qtsvg python3-pyside6.qtdbus)
 
@@ -16,10 +16,17 @@ if command -v apt >/dev/null 2>&1; then
   sudo apt install -y "${REQUIRED[@]}"
 else
   say "No apt detected — install these manually, then re-run:"
-  echo "   - input-remapper  (https://github.com/sezanzeb/input-remapper)"
-  echo "   - PySide6         (pip install --user PySide6)"
+  echo "   - input-remapper    (https://github.com/sezanzeb/input-remapper)"
+  echo "   - PySide6           (pip install --user PySide6)"
+  echo "   - python-evdev      (pip install --user evdev)"
+  echo "   - xmodmap           (your distro's x11-xserver-utils / xorg-xmodmap)"
   exit 1
 fi
+
+# Capturing key codes reads /dev/input, which requires the 'input' group.
+say "Adding you to the 'input' group (needed to capture key codes)"
+sudo gpasswd -a "$USER" input || true
+echo "   (log out and back in for the group change to take effect)"
 
 read -r -p $'\nInstall OpenRazer for Chroma lighting? (optional) [y/N] ' ans
 if [[ "${ans:-N}" =~ ^[Yy] ]]; then

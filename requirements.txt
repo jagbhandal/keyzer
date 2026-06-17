@@ -8,3 +8,14 @@
 #
 # pip alternative (only where PySide6 wheels exist for your Python):
 PySide6>=6.6
+
+# Device capture (app/capture.py, tools/probe.py) reads evdev directly. On
+# Ubuntu the apt build is python3-evdev; via pip:
+evdev>=1.6
+
+# Not Python packages, but required at runtime (install.sh handles these on apt):
+#   - input-remapper        the remapping engine (a root systemd service)
+#   - x11-xserver-utils     provides `xmodmap`, which the root daemon needs to
+#                           resolve key names — without it every keysym binding
+#                           is dropped server-side
+#   - membership of the `input` group, to read /dev/input during capture

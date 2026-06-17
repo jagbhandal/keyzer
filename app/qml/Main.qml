@@ -118,6 +118,9 @@ Rectangle {
         named[Qt.Key_Escape] = "Esc"; named[Qt.Key_Tab] = "Tab"; named[Qt.Key_Space] = "Space"
         named[Qt.Key_Return] = "Enter"; named[Qt.Key_Enter] = "Enter"; named[Qt.Key_Backspace] = "Bksp"
         named[Qt.Key_Up] = "↑"; named[Qt.Key_Down] = "↓"; named[Qt.Key_Left] = "←"; named[Qt.Key_Right] = "→"
+        named[Qt.Key_F1] = "F1"; named[Qt.Key_F2] = "F2"; named[Qt.Key_F3] = "F3"; named[Qt.Key_F4] = "F4"
+        named[Qt.Key_F5] = "F5"; named[Qt.Key_F6] = "F6"; named[Qt.Key_F7] = "F7"; named[Qt.Key_F8] = "F8"
+        named[Qt.Key_F9] = "F9"; named[Qt.Key_F10] = "F10"; named[Qt.Key_F11] = "F11"; named[Qt.Key_F12] = "F12"
         var mods = [Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta]
         if (mods.indexOf(event.key) !== -1) return parts.join("+")
         var k
@@ -601,7 +604,9 @@ Rectangle {
                         Flow {
                             width: parent.width; spacing: 6
                             Repeater {
-                                model: ["Esc", "Tab", "Shift", "Ctrl", "Alt", "Space", "Enter", "↑", "↓", "←", "→", "Q", "W", "E", "R", "F", "1", "2", "3", "LMB", "RMB", "MMB"]
+                                model: ["Esc", "Tab", "Shift", "Ctrl", "Alt", "Space", "Enter", "↑", "↓", "←", "→",
+                                    "Q", "W", "E", "R", "F", "1", "2", "3", "LMB", "RMB", "MMB",
+                                    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"]
                                 Chip { label: modelData; onPicked: root.capValue = modelData }
                             }
                         }
@@ -612,7 +617,7 @@ Rectangle {
                     width: parent.width; spacing: 10; height: 42
                     Rectangle {
                         width: parent.width - 90; height: 42; radius: 10; color: root.greenDim; border.width: 1; border.color: root.green
-                        Text { anchors.centerIn: parent; text: "Apply mapping"; color: root.greenTxt; font.pixelSize: 13; font.bold: true }
+                        Text { anchors.centerIn: parent; text: "Set binding"; color: root.greenTxt; font.pixelSize: 13; font.bold: true }
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.applyBinding() }
                     }
                     Rectangle {

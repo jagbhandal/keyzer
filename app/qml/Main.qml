@@ -103,15 +103,20 @@ Rectangle {
         backend.setBinding(curProfile, curDev, selKey, v)
         markDirty()
         var r = backend.applyToHardware(curProfile, curDev)   // set AND push live, one step
-        var warn = "", devs = r.devices || []                 // did THIS bind get dropped?
-        for (var i = 0; i < devs.length; i++) {
-            var ws = devs[i].warnings || []
-            for (var j = 0; j < ws.length; j++) if (ws[j].indexOf(selKey) === 0) warn = ws[j]
-        }
-        if (warn !== "") showToast("⚠ not applied — " + warn)
+        var warn = bindWarning(r, selKey)                     // did THIS bind get dropped server-side?
+        if (warn) showToast("⚠ not applied — " + warn)
         else if (r.ok) showToast(selKey.replace(/_/g, " ") + " → " + v + "  · live")
-        else { var e = devs.length ? (devs[0].error || r.message) : r.message
-               showToast("Bound · " + (e || "not pushed live")) }
+        else {
+            var e = (r.devices && r.devices.length) ? (r.devices[0].error || r.message) : r.message
+            showToast("Bound · " + (e || "not pushed live"))
+        }
+    }
+    // The skip warning for `key` in an apply report (the daemon drops binds it
+    // can't express), or "" if it applied cleanly.
+    function bindWarning(report, key) {
+        return (report.devices || [])
+            .reduce(function (all, d) { return all.concat(d.warnings || []) }, [])
+            .find(function (w) { return w.indexOf(key) === 0 }) || ""
     }
     function clearBinding() {
         if (selKey === "") return

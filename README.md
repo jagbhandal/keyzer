@@ -83,11 +83,16 @@ cd keyzer
 python3 app/main.py
 ```
 
-Or just run the helper, which installs what's missing:
+Or just run the helper — it installs anything missing **and adds KEYZER to your
+application menu** (icon + launcher), so you can open it from your app grid like
+any other app instead of the terminal:
 
 ```bash
 ./install.sh
 ```
+
+Then search **KEYZER** in your activities/app grid (right-click → pin to favourites
+for one-click launch).
 
 ### Optional — Chroma lighting (OpenRazer)
 

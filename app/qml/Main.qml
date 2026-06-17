@@ -21,11 +21,25 @@ Rectangle {
     readonly property color muted2: "#5e5e6b"
     readonly property color green: "#44d62c"
     readonly property color greenDim: "#2f9a1f"
+    readonly property color greenHot: "#7dff5e"     // hottest highlight — the "lit filament"
     readonly property color cyan: "#22c8ff"
     readonly property color greenTxt: "#eafbe6"
     readonly property color bg0: "#0c0c11"
     readonly property color danger: "#d65c44"
     readonly property color amber: "#e0a83a"
+
+    // ---------- neon: "powered on" pulse driver ----------
+    // one shared low-amplitude oscillation; everything energized reads off this,
+    // so the whole UI breathes in sync instead of a dozen unrelated timers.
+    property real pulse: 0.0
+    SequentialAnimation on pulse {
+        running: true; loops: Animation.Infinite
+        NumberAnimation { to: 1.0; duration: 1600; easing.type: Easing.InOutSine }
+        NumberAnimation { to: 0.0; duration: 1600; easing.type: Easing.InOutSine }
+    }
+    // load sweep — a single horizontal light bar travels across the stage on start
+    property real bootSweep: 0.0
+    NumberAnimation on bootSweep { from: 0.0; to: 1.0; duration: 1100; easing.type: Easing.OutCubic; running: true }
 
     // ---------- ui state ----------
     property string curDev: "tartarus"
@@ -185,6 +199,26 @@ Rectangle {
     }
     Timer { running: root.lighting; interval: 220; repeat: true; onTriggered: root.litStep++ }
 
+    // ================= ambient backdrop (neon) =================
+    // a quiet vertical wash + a faint green floor-glow so the whole surface
+    // reads as "powered on", not flat black. Sits behind everything (z:-2).
+    Rectangle {
+        anchors.fill: parent; z: -2
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: "#101218" }
+            GradientStop { position: 0.45; color: root.bg }
+            GradientStop { position: 1.0; color: "#08090c" }
+        }
+    }
+    Rectangle {   // ambient green floor-glow, low and restrained
+        anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+        height: parent.height * 0.42; z: -2
+        gradient: Gradient {
+            GradientStop { position: 0.0; color: "transparent" }
+            GradientStop { position: 1.0; color: root.alpha(root.green, 0.06 + 0.02 * root.pulse) }
+        }
+    }
+
     // ================= inline components =================
     component FlatSwitch: Item {
         id: sw
@@ -238,21 +272,36 @@ Rectangle {
         width: k.w; height: k.h
         opacity: hs.unavailable !== "" ? 0.45 : 1
         Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
-        Rectangle {   // lit halo on the selected key — KEYZER's signature interaction
+        // ---- signature: the lit selected key. layered halos breathing on the
+        // shared pulse make the chosen key read like a glowing, powered filament.
+        Rectangle {   // outermost soft bloom
             visible: hs.selected
-            anchors.fill: parent; anchors.margins: -7; radius: 14
-            color: root.alpha(root.green, 0.16)
+            anchors.fill: parent; anchors.margins: -16; radius: 22
+            color: root.alpha(root.green, 0.07 + 0.05 * root.pulse)
+        }
+        Rectangle {   // mid halo
+            visible: hs.selected
+            anchors.fill: parent; anchors.margins: -8; radius: 15
+            color: root.alpha(root.green, 0.16 + 0.06 * root.pulse)
         }
         Rectangle {
             id: hit
             anchors.fill: parent; radius: 9
-            color: hs.selected ? root.alpha(root.green, 0.12)
+            color: hs.selected ? root.alpha(root.green, 0.18 + 0.06 * root.pulse)
                  : root.aligning ? root.alpha(root.cyan, 0.10)
+                 : hov.hovered ? root.alpha(root.green, 0.07)
                  : "transparent"
             border.width: (hs.selected || root.aligning || hov.hovered) ? 2 : 0
-            border.color: hs.selected ? root.green
+            border.color: hs.selected ? root.greenHot
                         : root.aligning ? root.cyan
                         : Qt.rgba(1, 1, 1, 0.55)
+        }
+        Rectangle {   // bright inner rim ring on the selected key — the "on" filament edge
+            visible: hs.selected
+            anchors.fill: parent; anchors.margins: 1; radius: 8
+            color: "transparent"
+            border.width: 1
+            border.color: root.alpha(root.greenHot, 0.5 + 0.4 * root.pulse)
         }
         Rectangle {
             id: pill
@@ -260,14 +309,14 @@ Rectangle {
             anchors.centerIn: parent
             width: Math.max(26, pillTxt.implicitWidth + 14); height: 24; radius: 6
             color: Qt.rgba(0.03, 0.035, 0.024, 0.86)
-            border.width: 1
+            border.width: hs.selected ? 1.5 : 1
             border.color: hs.unavailable !== "" ? root.line2
                         : hs.conflict ? root.amber
-                        : hs.selected ? root.green : root.alpha(root.green, 0.45)
+                        : hs.selected ? root.greenHot : root.alpha(root.green, 0.45)
             Text {
                 id: pillTxt; anchors.centerIn: parent
                 text: hs.unavailable !== "" ? "n/a" : (hs.binding !== "" ? hs.binding : (hs.selected ? "·" : ""))
-                color: hs.unavailable !== "" ? root.muted2 : (hs.conflict ? root.amber : root.green)
+                color: hs.unavailable !== "" ? root.muted2 : (hs.conflict ? root.amber : (hs.selected ? root.greenHot : root.green))
                 font.pixelSize: 14; font.bold: true
             }
         }
@@ -291,17 +340,27 @@ Rectangle {
         property bool active: false
         signal chosen()
         height: 54; radius: 9
-        color: active ? root.alpha(root.green, 0.10)
+        color: active ? root.alpha(root.green, 0.10 + 0.03 * root.pulse)
              : rdMa.containsMouse ? root.panelC : "transparent"
-        border.width: 1; border.color: active ? root.greenDim : "transparent"
+        border.width: 1; border.color: active ? root.alpha(root.green, 0.55 + 0.3 * root.pulse) : "transparent"
+        Rectangle {   // left edge "power bar" — lights up on the active device
+            visible: rd.active
+            anchors { left: parent.left; top: parent.top; bottom: parent.bottom; topMargin: 8; bottomMargin: 8 }
+            width: 3; radius: 2
+            gradient: Gradient {
+                GradientStop { position: 0.0; color: root.alpha(root.greenHot, 0.4) }
+                GradientStop { position: 0.5; color: root.greenHot }
+                GradientStop { position: 1.0; color: root.alpha(root.greenHot, 0.4) }
+            }
+        }
         Rectangle {
             id: ico
             anchors { left: parent.left; leftMargin: 11; verticalCenter: parent.verticalCenter }
-            width: 32; height: 32; radius: 8; color: root.panel2
-            border.width: 1; border.color: rd.active ? root.greenDim : root.line2
+            width: 32; height: 32; radius: 8; color: rd.active ? root.alpha(root.green, 0.14) : root.panel2
+            border.width: 1; border.color: rd.active ? root.green : root.line2
             Column {
                 anchors.centerIn: parent; spacing: 3
-                Repeater { model: 3; Rectangle { width: 14; height: 2; radius: 1; color: rd.active ? root.green : root.muted } }
+                Repeater { model: 3; Rectangle { width: 14; height: 2; radius: 1; color: rd.active ? root.greenHot : root.muted } }
             }
         }
         Column {
@@ -310,9 +369,15 @@ Rectangle {
             Text { text: rd.devName; color: root.txt; font.pixelSize: 13; font.bold: true }
             Text { text: rd.devType; color: root.muted; font.pixelSize: 11 }
         }
-        Rectangle {
+        Rectangle {   // status LED glow halo (behind the dot)
+            visible: rd.active
+            anchors { right: parent.right; rightMargin: 8.5; verticalCenter: parent.verticalCenter }
+            width: 14; height: 14; radius: 7
+            color: root.alpha(root.greenHot, 0.25 + 0.2 * root.pulse)
+        }
+        Rectangle {   // status LED — glows on the active device
             anchors { right: parent.right; rightMargin: 12; verticalCenter: parent.verticalCenter }
-            width: 7; height: 7; radius: 4; color: rd.active ? root.green : "#3a3a45"
+            width: 7; height: 7; radius: 4; color: rd.active ? root.greenHot : "#3a3a45"
         }
         MouseArea { id: rdMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: rd.chosen() }
     }
@@ -354,8 +419,12 @@ Rectangle {
                 Rectangle {
                     id: profileDd
                     width: 128; height: 34; radius: 9; anchors.verticalCenter: parent.verticalCenter
-                    color: root.panel2; border.width: 1; border.color: ddMa.containsMouse ? root.greenDim : root.line2
-                    Text { anchors { left: parent.left; leftMargin: 12; verticalCenter: parent.verticalCenter }text: root.curProfile; color: root.txt; font.pixelSize: 13; font.bold: true }
+                    color: root.panel2; border.width: 1; border.color: ddMa.containsMouse ? root.green : root.alpha(root.greenDim, 0.6)
+                    Rectangle {   // tiny active-profile LED
+                        anchors { left: parent.left; leftMargin: 11; verticalCenter: parent.verticalCenter }
+                        width: 5; height: 5; radius: 3; color: root.greenHot
+                    }
+                    Text { anchors { left: parent.left; leftMargin: 24; verticalCenter: parent.verticalCenter }text: root.curProfile; color: root.txt; font.pixelSize: 13; font.bold: true }
                     Text { anchors { right: parent.right; rightMargin: 11; verticalCenter: parent.verticalCenter }text: "▾"; color: root.muted; font.pixelSize: 11 }
                     MouseArea { id: ddMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: profileMenu.open() }
                     Menu {
@@ -388,14 +457,14 @@ Rectangle {
                     GradientStop { position: 0.0; color: applyMa.containsMouse ? "#5fe245" : root.green }
                     GradientStop { position: 1.0; color: applyMa.containsMouse ? root.green : root.greenDim }
                 }
-                Rectangle {   // soft halo — marks the one primary action
-                    anchors.fill: parent; anchors.margins: -6; radius: 14; z: -1
-                    color: root.alpha(root.green, applyMa.containsMouse ? 0.30 : 0.15)
+                Rectangle {   // breathing halo — marks the one primary action, "powered"
+                    anchors.fill: parent; anchors.margins: -7; radius: 15; z: -1
+                    color: root.alpha(root.green, applyMa.containsMouse ? 0.34 : (0.13 + 0.10 * root.pulse))
                 }
                 Row {
                     id: applyRow; anchors.centerIn: parent; spacing: 6
                     Text { text: "⚡"; color: root.greenTxt; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: "Apply to device"; color: root.greenTxt; font.pixelSize: 12; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Apply to device"; color: root.greenTxt; font.pixelSize: 12; font.bold: true; font.letterSpacing: 0.3; anchors.verticalCenter: parent.verticalCenter }
                 }
                 MouseArea { id: applyMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.applyToHardware() }
             }
@@ -403,8 +472,13 @@ Rectangle {
                 id: livePill; anchors.verticalCenter: parent.verticalCenter
                 visible: root.qaLive || Object.keys(backend.liveStatus).length > 0
                 width: liveRow.implicitWidth + 20; height: 34; radius: 9
-                color: lpMa.containsMouse ? root.alpha(root.danger, 0.18) : root.alpha(root.green, 0.12)
-                border.width: 1; border.color: lpMa.containsMouse ? root.danger : root.greenDim
+                color: lpMa.containsMouse ? root.alpha(root.danger, 0.18) : root.alpha(root.green, 0.12 + 0.05 * root.pulse)
+                border.width: 1; border.color: lpMa.containsMouse ? root.danger : root.alpha(root.green, 0.55 + 0.35 * root.pulse)
+                Rectangle {   // breathing live-glow halo (hidden on hover→STOP)
+                    visible: !lpMa.containsMouse
+                    anchors.fill: parent; anchors.margins: -6; radius: 14; z: -1
+                    color: root.alpha(root.green, 0.05 + 0.07 * root.pulse)
+                }
                 Row {
                     id: liveRow; anchors.centerIn: parent; spacing: 7
                     Rectangle {
@@ -568,8 +642,13 @@ Rectangle {
                 Row {
                     spacing: 13; width: parent.width
                     Rectangle {
-                        width: 46; height: 46; radius: 10; color: "#22331c"; border.width: 1; border.color: root.greenDim
-                        Text { anchors.centerIn: parent; text: root.selKey.split("_").slice(1).join("_").slice(0, 5); color: root.green; font.pixelSize: 14; font.bold: true }
+                        width: 46; height: 46; radius: 10; color: "#22331c"
+                        border.width: 1; border.color: root.alpha(root.greenHot, 0.6 + 0.3 * root.pulse)
+                        Rectangle {   // soft lit halo mirroring the selected hotspot's glow
+                            anchors.fill: parent; anchors.margins: -4; radius: 14; z: -1
+                            color: root.alpha(root.green, 0.08 + 0.06 * root.pulse)
+                        }
+                        Text { anchors.centerIn: parent; text: root.selKey.split("_").slice(1).join("_").slice(0, 5); color: root.greenHot; font.pixelSize: 14; font.bold: true }
                     }
                     Column {
                         anchors.verticalCenter: parent.verticalCenter; spacing: 2
@@ -643,9 +722,18 @@ Rectangle {
                 Row {
                     width: parent.width; spacing: 10; height: 42
                     Rectangle {
-                        width: parent.width - 90; height: 42; radius: 10; color: root.greenDim; border.width: 1; border.color: root.green
-                        Text { anchors.centerIn: parent; text: "Bind"; color: root.greenTxt; font.pixelSize: 13; font.bold: true }
-                        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.applyBinding() }
+                        width: parent.width - 90; height: 42; radius: 10
+                        border.width: 1; border.color: bindMa.containsMouse ? root.greenHot : root.green
+                        gradient: Gradient {
+                            GradientStop { position: 0.0; color: bindMa.containsMouse ? "#4fc036" : root.green }
+                            GradientStop { position: 1.0; color: root.greenDim }
+                        }
+                        Rectangle {   // breathing halo — the panel's primary commit action
+                            anchors.fill: parent; anchors.margins: -5; radius: 14; z: -1
+                            color: root.alpha(root.green, bindMa.containsMouse ? 0.30 : (0.08 + 0.07 * root.pulse))
+                        }
+                        Text { anchors.centerIn: parent; text: "Bind"; color: root.greenTxt; font.pixelSize: 13; font.bold: true; font.letterSpacing: 0.3 }
+                        MouseArea { id: bindMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.applyBinding() }
                     }
                     Rectangle {
                         width: 80; height: 42; radius: 10; color: root.panel2; border.width: 1; border.color: root.line2
@@ -666,6 +754,15 @@ Rectangle {
             id: stage
             anchors { top: parent.top; bottom: parent.bottom; left: rail.right; right: panelArea.left }
             clip: true
+
+            // ambient stage vignette — a faint green top-light so the device looks lit
+            Rectangle {
+                anchors.fill: parent; z: 0
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: root.alpha(root.green, 0.05) }
+                    GradientStop { position: 0.55; color: "transparent" }
+                }
+            }
 
             // title
             Column {
@@ -690,6 +787,8 @@ Rectangle {
                             Rectangle {
                                 width: tabTxt.implicitWidth + 36; height: 30; radius: 7
                                 color: root.curView === modelData ? root.greenDim : "transparent"
+                                border.width: root.curView === modelData ? 1 : 0
+                                border.color: root.alpha(root.greenHot, 0.5 + 0.3 * root.pulse)
                                 Text { id: tabTxt; anchors.centerIn: parent; text: (root.device && root.device.views[modelData]) ? (root.device.views[modelData].label || modelData) : modelData; color: root.curView === modelData ? root.greenTxt : root.muted; font.pixelSize: 12; font.bold: true }
                                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.curView = modelData; root.deselect() } }
                             }
@@ -751,6 +850,25 @@ Rectangle {
                             unavailable: modelData.unavailable || ""
                         }
                     }
+                }
+            }
+
+            // ---- signature load moment: a single green light bar sweeps across
+            // the stage on start, then fades — the UI "powering on".
+            Rectangle {
+                z: 6
+                visible: root.bootSweep < 0.999
+                width: 120
+                anchors { top: parent.top; bottom: parent.bottom }
+                x: -width + (stage.width + width * 2) * root.bootSweep
+                opacity: (1.0 - root.bootSweep) * 0.5
+                rotation: 8
+                transformOrigin: Item.Center
+                gradient: Gradient {
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: "transparent" }
+                    GradientStop { position: 0.5; color: root.alpha(root.greenHot, 0.5) }
+                    GradientStop { position: 1.0; color: "transparent" }
                 }
             }
         }

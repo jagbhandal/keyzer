@@ -87,12 +87,18 @@ Rectangle {
         var v = capValue !== "" ? capValue : curBinding()
         if (v === "" || v === "—") { showToast("Pick a binding first"); return }
         backend.setBinding(curProfile, curDev, selKey, v)
-        markDirty(); showToast("Saved to the " + curProfile + " profile")
+        markDirty()
+        var r = backend.applyToHardware(curProfile, curDev)   // set AND push live, one step
+        if (r.ok) showToast(selKey.replace(/_/g, " ") + " → " + v + "  · live")
+        else { var e = (r.devices && r.devices.length) ? (r.devices[0].error || r.message) : r.message
+               showToast("Bound · " + (e || "not pushed live")) }
     }
     function clearBinding() {
         if (selKey === "") return
         backend.clearBinding(curProfile, curDev, selKey)
-        capValue = ""; markDirty(); showToast("Cleared")
+        capValue = ""; markDirty()
+        var r = backend.applyToHardware(curProfile, curDev)
+        showToast(r.ok ? "Cleared · live" : "Cleared")
     }
     function applyToHardware() {
         if (!backend.deps.inputRemapper) { showToast("input-remapper not found"); return }
@@ -125,8 +131,10 @@ Rectangle {
         if (mods.indexOf(event.key) !== -1) return parts.join("+")
         var k
         if (named[event.key] !== undefined) k = named[event.key]
+        else if (event.key >= Qt.Key_A && event.key <= Qt.Key_Z) k = String.fromCharCode(event.key)   // base letter
+        else if (event.key >= Qt.Key_0 && event.key <= Qt.Key_9) k = String.fromCharCode(event.key)   // base digit (Shift-proof)
         else if (event.text && event.text.length === 1) k = event.text.toUpperCase()
-        else k = event.text
+        else k = ""
         if (k && k !== "") parts.push(k)
         return parts.join("+")
     }
@@ -164,7 +172,7 @@ Rectangle {
     Timer {
         id: applyTimer; interval: 60
         onTriggered: {
-            root.applyResult = backend.applyToHardware(root.curProfile)
+            root.applyResult = backend.applyToHardware(root.curProfile, "")
             resultOverlay.visible = true
         }
     }
@@ -617,7 +625,7 @@ Rectangle {
                     width: parent.width; spacing: 10; height: 42
                     Rectangle {
                         width: parent.width - 90; height: 42; radius: 10; color: root.greenDim; border.width: 1; border.color: root.green
-                        Text { anchors.centerIn: parent; text: "Set binding"; color: root.greenTxt; font.pixelSize: 13; font.bold: true }
+                        Text { anchors.centerIn: parent; text: "Bind"; color: root.greenTxt; font.pixelSize: 13; font.bold: true }
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.applyBinding() }
                     }
                     Rectangle {
@@ -628,7 +636,7 @@ Rectangle {
                 }
                 Text {
                     width: parent.width; wrapMode: Text.WordWrap
-                    text: "Saved to the " + root.curProfile + " profile · hit Apply to device to push it live"
+                    text: "“Bind” sets it and pushes it live instantly · “Clear” removes it"
                     color: root.muted2; font.pixelSize: 11
                 }
             }
@@ -1044,6 +1052,10 @@ Rectangle {
         Keys.onPressed: function(event) {
             if (!root.listening) return
             event.accepted = true
+            // wait past bare modifier presses so combos capture fully (Ctrl+1, Ctrl+Shift+1)
+            var mods = [Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
+                        Qt.Key_Super_L, Qt.Key_Super_R, Qt.Key_AltGr]
+            if (mods.indexOf(event.key) !== -1) return
             root.capValue = root.keyLabel(event)
             root.listening = false
         }

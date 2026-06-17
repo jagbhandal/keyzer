@@ -301,17 +301,19 @@ class Backend(QObject):
         """'user' (you ran capture.py), 'default' (bundled map), or 'none'."""
         return engine.captures_origin()
 
-    @Slot(str, result="QVariant")
-    def applyToHardware(self, profile: str) -> dict:
-        """Generate + load an input-remapper preset for every device in the
-        profile. Returns a UI-shaped report (overall + per device)."""
-        # only push binds for hotspots that still exist in the layout — drops
-        # orphans (e.g. removed thumb-pad diagonals) so they can't create
-        # duplicate/conflicting input-remapper mappings.
-        binds = {dev: {h: v for h, v in (b or {}).items()
-                       if h in self._hotspot_ids.get(dev, set())
-                       and h not in self._unavailable.get(dev, set())}
-                 for dev, b in self._profiles.get(profile, {}).items()}
+    @Slot(str, str, result="QVariant")
+    def applyToHardware(self, profile: str, dev: str = "") -> dict:
+        """Generate + load an input-remapper preset for the profile — all devices,
+        or just ``dev``. Returns a UI-shaped report (overall + per device)."""
+        # only push bindable hotspots that exist (drops orphans + unavailable
+        # controls; thumb-pad diagonals are handled via combos).
+        src = self._profiles.get(profile, {})
+        if dev:
+            src = {dev: src.get(dev, {})}
+        binds = {d: {h: v for h, v in (b or {}).items()
+                     if h in self._hotspot_ids.get(d, set())
+                     and h not in self._unavailable.get(d, set())}
+                 for d, b in src.items()}
         report = engine.apply_profile(profile, binds, engine.load_captures(), combos=self._combos)
         if "_error" in report:
             return {"ok": False, "message": report["_error"], "devices": []}

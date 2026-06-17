@@ -158,9 +158,14 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
         return None
 
     name = preset_dir_name(nodes)
-    hotspots = [k for view in dev_layout["views"].values() for k in view["keys"]]
+    hotspots = [k for view in dev_layout["views"].values() for k in view["keys"]
+                if not k.get("combo")]
+    ncombo = sum(1 for view in dev_layout["views"].values()
+                 for k in view["keys"] if k.get("combo"))
     print(f"\n=== {dev_layout.get('name', dev_id)} — {len(hotspots)} keys "
           f"(device '{name}', {len(nodes)} nodes) ===")
+    if ncombo:
+        print(f"  ({ncombo} combo keys — 8-way diagonals — are derived from the cardinals, not captured)")
     print("  Press each key as prompted. Commands (type + Enter):  "
           "s=skip  b=back  q=finish device\n")
 

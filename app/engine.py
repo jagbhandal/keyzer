@@ -184,30 +184,48 @@ def preset_name_for(profile: str) -> str:
     return f"keyzer-{slug}-{digest}"
 
 
-def build_preset(binds: dict, captures: dict) -> tuple[list[dict], list[str]]:
-    """Join binds (hotspot -> value) with captures (hotspot -> input config) into
-    a list of input-remapper mappings, plus a list of human-readable warnings for
-    binds that were skipped."""
+def _is_pointer(cap: dict) -> bool:
+    return int(cap.get("type", 0)) == 2 and int(cap.get("code", -1)) in (0, 1, 2)
+
+
+def _input_config(cap: dict) -> dict:
+    inp = {"type": int(cap["type"]), "code": int(cap["code"])}
+    if cap.get("origin_hash"):
+        inp["origin_hash"] = cap["origin_hash"]
+    if cap.get("analog_threshold"):
+        inp["analog_threshold"] = int(cap["analog_threshold"])
+    return inp
+
+
+def build_preset(binds: dict, captures: dict, combos: dict | None = None) -> tuple[list[dict], list[str]]:
+    """Join binds with captures into input-remapper mappings (+ skip warnings).
+
+    A hotspot listed in ``combos`` (e.g. an 8-way diagonal -> its two cardinal
+    switches) maps to the COMBINATION of its members' captures; input-remapper's
+    longest-match then fires it instead of the members' individual mappings."""
+    combos = combos or {}
     mappings, warnings = [], []
     for hotspot, value in binds.items():
-        cap = captures.get(hotspot)
-        if not cap:
-            warnings.append(f"{hotspot}: not captured yet — run capture.py")
+        members = combos.get(hotspot) or [hotspot]
+        inputs, bad = [], None
+        for m in members:
+            cap = captures.get(m)
+            if not cap:
+                bad = f"{hotspot}: {m} not captured yet — run capture.py"
+                break
+            if _is_pointer(cap):
+                bad = f"{hotspot}: {m} captured pointer movement — re-capture it"
+                break
+            inputs.append(_input_config(cap))
+        if bad:
+            warnings.append(bad)
             continue
-        if int(cap.get("type", 0)) == 2 and int(cap.get("code", -1)) in (0, 1, 2):
-            warnings.append(f"{hotspot}: captured pointer movement, not a button — re-capture it")
-            continue  # never remap REL_X/Y/Z — that would break the pointer
         try:
             target, symbol = output(value)
         except (Untranslatable, AttributeError, TypeError, ValueError) as exc:
             warnings.append(f"{hotspot} = {value!r}: {exc}")
             continue
-        inp = {"type": int(cap["type"]), "code": int(cap["code"])}
-        if cap.get("origin_hash"):
-            inp["origin_hash"] = cap["origin_hash"]
-        if cap.get("analog_threshold"):
-            inp["analog_threshold"] = int(cap["analog_threshold"])
-        mappings.append({"input_combination": [inp],
+        mappings.append({"input_combination": inputs,
                          "target_uinput": target, "output_symbol": symbol})
     return mappings, warnings
 
@@ -291,7 +309,7 @@ def captures_origin(path: Path = CAPTURES) -> str:
 
 
 def apply_profile(profile: str, binds_by_device: dict, captures: dict,
-                  *, autoload: bool = False) -> dict:
+                  *, autoload: bool = False, combos: dict | None = None) -> dict:
     """Generate + apply a preset per device. binds_by_device: {dev: {hotspot:value}};
     captures: the captures.json dict. Returns a per-device result report."""
     if not available():
@@ -309,7 +327,8 @@ def apply_profile(profile: str, binds_by_device: dict, captures: dict,
         if not device_name:
             report[dev_id] = {"ok": False, "error": "not captured — run capture.py"}
             continue
-        mappings, warnings = build_preset(binds, cap.get("captured") or {})
+        mappings, warnings = build_preset(binds, cap.get("captured") or {},
+                                          (combos or {}).get(dev_id))
         if not mappings:
             report[dev_id] = {"ok": False, "error": "no applicable binds",
                               "warnings": warnings}

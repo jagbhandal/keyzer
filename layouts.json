@@ -37,19 +37,19 @@
       },
       "thumb": {
         "label": "Thumb",
-        "sub": "8-way directional pad · drag a direction onto its wedge",
+        "sub": "8-way pad · diagonals are bindable too (unbound = both adjacent switches fire)",
         "image": "prototype/assets/tartarus-thumb.png",
         "framed": true,
         "size": [910, 660],
         "keys": [
           {"id": "TAR_TPAD_N",  "x": 598, "y": 235, "w": 64, "h": 64},
-          {"id": "TAR_TPAD_NE", "x": 703, "y": 285, "w": 64, "h": 64},
+          {"id": "TAR_TPAD_NE", "x": 703, "y": 285, "w": 64, "h": 64, "combo": ["TAR_TPAD_N", "TAR_TPAD_E"]},
           {"id": "TAR_TPAD_E",  "x": 739, "y": 407, "w": 64, "h": 64},
-          {"id": "TAR_TPAD_SE", "x": 690, "y": 505, "w": 64, "h": 64},
+          {"id": "TAR_TPAD_SE", "x": 690, "y": 505, "w": 64, "h": 64, "combo": ["TAR_TPAD_S", "TAR_TPAD_E"]},
           {"id": "TAR_TPAD_S",  "x": 580, "y": 541, "w": 64, "h": 64},
-          {"id": "TAR_TPAD_SW", "x": 469, "y": 486, "w": 64, "h": 64},
+          {"id": "TAR_TPAD_SW", "x": 469, "y": 486, "w": 64, "h": 64, "combo": ["TAR_TPAD_S", "TAR_TPAD_W"]},
           {"id": "TAR_TPAD_W",  "x": 426, "y": 381, "w": 64, "h": 64},
-          {"id": "TAR_TPAD_NW", "x": 490, "y": 263, "w": 64, "h": 64}
+          {"id": "TAR_TPAD_NW", "x": 490, "y": 263, "w": 64, "h": 64, "combo": ["TAR_TPAD_N", "TAR_TPAD_W"]}
         ]
       }
     }

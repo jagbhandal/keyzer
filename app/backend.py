@@ -43,9 +43,7 @@ def _default_profiles() -> dict:
                 "TAR_11": "Shift", "TAR_12": "A", "TAR_13": "S", "TAR_14": "D", "TAR_15": "F",
                 "TAR_16": "Ctrl", "TAR_17": "Z", "TAR_18": "X", "TAR_19": "C", "TAR_20": "V",
                 "TAR_THUMB": "Space", "TAR_WHEEL": "Vol",
-                "TAR_TPAD_N": "W", "TAR_TPAD_S": "S", "TAR_TPAD_W": "A", "TAR_TPAD_E": "D",
-                "TAR_TPAD_NW": "W+A", "TAR_TPAD_NE": "W+D",
-                "TAR_TPAD_SW": "S+A", "TAR_TPAD_SE": "S+D",
+                "TAR_TPAD_N": "W", "TAR_TPAD_E": "D", "TAR_TPAD_S": "S", "TAR_TPAD_W": "A",
             },
             "naga": {
                 "NAGA_L": "LMB", "NAGA_R": "RMB", "NAGA_WHL": "MMB",
@@ -98,6 +96,12 @@ class Backend(QObject):
                                             if not k.startswith("_")})
         self._dev_totals = {dev: sum(len(v["keys"]) for v in lay["views"].values())
                             for dev, lay in self._layouts.items()}
+        self._hotspot_ids = {dev: {k["id"] for v in lay["views"].values() for k in v["keys"]}
+                             for dev, lay in self._layouts.items()}
+        # hotspot -> member hotspots for combination inputs (8-way pad diagonals)
+        self._combos = {dev: {k["id"]: k["combo"] for v in lay["views"].values()
+                              for k in v["keys"] if k.get("combo")}
+                        for dev, lay in self._layouts.items()}
         self._deps = _detect_deps()
         self._live = {}     # dev -> profile currently injected (KEYZER-tracked; daemon can't report it)
         self._load_profiles()
@@ -297,8 +301,12 @@ class Backend(QObject):
     def applyToHardware(self, profile: str) -> dict:
         """Generate + load an input-remapper preset for every device in the
         profile. Returns a UI-shaped report (overall + per device)."""
-        report = engine.apply_profile(profile, self._profiles.get(profile, {}),
-                                       engine.load_captures())
+        # only push binds for hotspots that still exist in the layout — drops
+        # orphans (e.g. removed thumb-pad diagonals) so they can't create
+        # duplicate/conflicting input-remapper mappings.
+        binds = {dev: {h: v for h, v in (b or {}).items() if h in self._hotspot_ids.get(dev, set())}
+                 for dev, b in self._profiles.get(profile, {}).items()}
+        report = engine.apply_profile(profile, binds, engine.load_captures(), combos=self._combos)
         if "_error" in report:
             return {"ok": False, "message": report["_error"], "devices": []}
         devices, all_ok, total = [], True, 0

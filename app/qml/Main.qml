@@ -231,6 +231,11 @@ Rectangle {
         width: k.w; height: k.h
         opacity: hs.unavailable !== "" ? 0.45 : 1
         Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
+        Rectangle {   // lit halo on the selected key — KEYZER's signature interaction
+            visible: hs.selected
+            anchors.fill: parent; anchors.margins: -7; radius: 14
+            color: root.alpha(root.green, 0.16)
+        }
         Rectangle {
             id: hit
             anchors.fill: parent; radius: 9
@@ -370,9 +375,16 @@ Rectangle {
             }
             Rectangle {
                 id: applyBtn; anchors.verticalCenter: parent.verticalCenter
-                width: applyRow.implicitWidth + 26; height: 34; radius: 9
-                color: applyMa.containsMouse ? root.green : root.greenDim
-                border.width: 1; border.color: root.green
+                width: applyRow.implicitWidth + 28; height: 34; radius: 9
+                border.width: 1; border.color: applyMa.containsMouse ? "#74f562" : root.green
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: applyMa.containsMouse ? "#5fe245" : root.green }
+                    GradientStop { position: 1.0; color: applyMa.containsMouse ? root.green : root.greenDim }
+                }
+                Rectangle {   // soft halo — marks the one primary action
+                    anchors.fill: parent; anchors.margins: -6; radius: 14; z: -1
+                    color: root.alpha(root.green, applyMa.containsMouse ? 0.30 : 0.15)
+                }
                 Row {
                     id: applyRow; anchors.centerIn: parent; spacing: 6
                     Text { text: "⚡"; color: root.greenTxt; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
@@ -561,7 +573,7 @@ Rectangle {
 
                 Column {
                     width: parent.width; spacing: 9
-                    Text { text: "OUTPUT TYPE"; color: root.muted; font.pixelSize: 11; font.letterSpacing: 1.2 }
+                    Text { text: "OUTPUT TYPE"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
                     Item {
                         id: seg
                         width: parent.width; height: 34
@@ -590,7 +602,7 @@ Rectangle {
                         id: cardCol
                         anchors { left: parent.left; right: parent.right; top: parent.top; margins: 16 }
                         spacing: 13
-                        Text { text: "BINDING"; color: root.muted; font.pixelSize: 11; font.letterSpacing: 1.2 }
+                        Text { text: "BINDING"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
                         Row {
                             width: parent.width; spacing: 10; height: 54
                             Rectangle {
@@ -608,7 +620,7 @@ Rectangle {
                                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: { root.listening = true; keyCatcher.forceActiveFocus() } }
                             }
                         }
-                        Text { text: "QUICK PICK"; color: root.muted; font.pixelSize: 11; font.letterSpacing: 1.2 }
+                        Text { text: "QUICK PICK"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
                         Flow {
                             width: parent.width; spacing: 6
                             Repeater {

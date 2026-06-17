@@ -122,6 +122,40 @@ python3 app/main.py
 
 KEYZER detects what's present at startup and adapts (the footer shows engine status; the Lighting toggle disables itself without OpenRazer).
 
+## Setting up keybinds
+
+You don't need to know anything about input-remapper. The flow:
+
+**Once per machine:** run `python3 app/capture.py` and press each key when asked — this teaches KEYZER the real code each physical key sends. (A default map ships so you can click around before calibrating.)
+
+**To bind a key:**
+1. Pick your device, then click the key on the picture.
+2. Set what it should do — three ways:
+   - **Listen** — click it, then press a key or shortcut (e.g. `F5`, `Ctrl+1`).
+   - **Quick pick** — tap a common key from the row.
+   - **Type it** — type the output in the binding box. This is the most powerful — it's how you set held combos like `W+A`.
+3. Hit **Bind** — it's live on the device instantly. **Clear** removes it.
+
+**What you can bind** — type any of these in the box (or use Listen / Quick pick):
+
+| You want… | Type | Result |
+|---|---|---|
+| A single key | `W` · `Space` · `F5` · `Esc` · `5` | that key |
+| **Diagonal movement** (two keys held together) | `W+A` | holds **W and A** while you hold the key — strafe / diagonal |
+| Sprint or crouch held down | `Shift` · `Ctrl` | holds the modifier while pressed |
+| A shortcut | `Ctrl+C` · `Alt+F4` · `Ctrl+Shift+1` | the combo, tapped |
+| A named action | `Copy` · `Paste` · `Undo` · `Save` | the matching shortcut |
+| A mouse button | `LMB` · `RMB` · `MMB` | mouse click |
+| Volume / media | `Vol+` · `Vol-` · `Mute` · `Play` | media key |
+| Punctuation | `-` · `=` · `/` · `Ctrl+-` | that symbol |
+| Disable the key | `Disable` | the key does nothing |
+
+**The one gamers want:** bind a thumb key to `W+A` (or `W+D`, `S+A`, `S+D`) and that single key walks you diagonally — it holds both directions for as long as you hold it.
+
+> **Held, not tapped:** anything joined with `+` is *held down together* for as long as you hold the trigger key, then released — perfect for movement (`W+A`) and modifiers (`Shift`). The same syntax covers shortcuts like `Ctrl+C` — just tap the key and the combo fires once.
+
+Profiles (e.g. **Gaming** vs **Work**) live in the header menu — switch anytime, and export/import to share a setup. Timed/recorded macro sequences aren't in the UI yet; for those you can edit the input-remapper preset directly.
+
 ## How it works
 
 KEYZER is a friendly front-end; the remapping is done by a proven engine.

@@ -1,0 +1,382 @@
+"""Tests for app/backend.py — the QObject bridge between QML and the engine.
+
+The backend needs a QGuiApplication (offscreen, set up in conftest) and persists
+profiles via ``engine.save_json(engine.PROFILES, ...)``. ``engine.PROFILES`` is
+computed once at import time from XDG_CONFIG_HOME, so per-test isolation can't
+rely on env alone — each test redirects ``engine.PROFILES`` / ``engine.CAPTURES``
+/ ``engine.CONFIG_DIR`` at its own temp dir (and restores them), so profiles
+persist independently and never touch the real user config.
+
+The single QGuiApplication is created once at module import (Qt forbids more than
+one). Backend instances are cheap to recreate, which lets us prove persistence
+across re-instantiation.
+
+Daemon note: ``applyToHardware`` is tested for its graceful, well-shaped return
+contract, NOT for a specific ok/True — whether a real input-remapper daemon is
+reachable varies by box. The one test that asserts an exact result monkeypatches
+``engine.service_ready`` to False to exercise the daemon-unreachable branch
+deterministically. No test requires a running input-remapper or openrazer.
+"""
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+import conftest  # noqa: F401  -- sys.path + offscreen + warning filter
+
+from PySide6.QtGui import QGuiApplication
+
+import engine
+import backend
+
+# Exactly one QGuiApplication for the whole process (Qt requirement).
+_app = QGuiApplication.instance() or QGuiApplication([])
+
+
+class _IsolatedBackendTest(unittest.TestCase):
+    """Base: redirect engine persistence paths into a fresh temp dir per test."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        tmp = Path(self._tmpdir.name)
+        cfg = tmp / "keyzer"
+        # Save + redirect the module-level paths the backend writes through.
+        self._saved = {
+            "CONFIG_DIR": engine.CONFIG_DIR,
+            "PROFILES": engine.PROFILES,
+            "CAPTURES": engine.CAPTURES,
+        }
+        engine.CONFIG_DIR = cfg
+        engine.PROFILES = cfg / "profiles.json"
+        engine.CAPTURES = cfg / "captures.json"
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(engine, k, v)
+        self._tmpdir.cleanup()
+
+    def new_backend(self) -> backend.Backend:
+        return backend.Backend()
+
+
+class SeedAndPersistenceTests(_IsolatedBackendTest):
+    def test_seeds_defaults_on_first_run(self):
+        b = self.new_backend()
+        self.assertEqual(b.profileList, ["Gaming", "Work", "Default"])
+        self.assertEqual(b.activeProfile, "Gaming")
+        # First run writes the seed to disk.
+        self.assertTrue(engine.PROFILES.exists())
+
+    def test_persists_across_reinstantiation(self):
+        b1 = self.new_backend()
+        b1.createProfile("Streaming")
+        b1.setBinding("Streaming", "tartarus", "TAR_01", "F5")
+        # A brand-new instance reading the same (redirected) paths sees it.
+        b2 = self.new_backend()
+        self.assertIn("Streaming", b2.profileList)
+        self.assertEqual(b2.activeProfile, "Streaming")
+        self.assertEqual(b2.bindings["Streaming"]["tartarus"]["TAR_01"], "F5")
+
+    def test_active_profile_repaired_if_invalid(self):
+        # Write a profiles.json whose 'active' points at a deleted profile.
+        engine.save_json(engine.PROFILES, {
+            "version": 1, "active": "Ghost", "live": {},
+            "profiles": {"Solo": {"tartarus": {}, "naga": {}}},
+        })
+        b = self.new_backend()
+        self.assertEqual(b.activeProfile, "Solo")  # repaired to a real one
+
+
+class ProfileCrudTests(_IsolatedBackendTest):
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+
+    def test_create_profile(self):
+        r = self.b.createProfile("Coding")
+        self.assertEqual(r, {"ok": True, "name": "Coding"})
+        self.assertIn("Coding", self.b.profileList)
+        self.assertEqual(self.b.activeProfile, "Coding")
+        # New profile is seeded with an empty bind map per device.
+        self.assertEqual(set(self.b.bindings["Coding"]), {"tartarus", "naga"})
+
+    def test_create_trims_whitespace(self):
+        r = self.b.createProfile("  Spaced  ")
+        self.assertEqual(r["name"], "Spaced")
+        self.assertIn("Spaced", self.b.profileList)
+
+    def test_create_empty_name_rejected(self):
+        r = self.b.createProfile("   ")
+        self.assertFalse(r["ok"])
+        self.assertIn("empty", r["error"].lower())
+
+    def test_create_duplicate_name_rejected(self):
+        r = self.b.createProfile("Gaming")
+        self.assertFalse(r["ok"])
+        self.assertIn("taken", r["error"].lower())
+
+    def test_rename_profile(self):
+        r = self.b.renameProfile("Work", "Office")
+        self.assertEqual(r, {"ok": True, "name": "Office"})
+        self.assertIn("Office", self.b.profileList)
+        self.assertNotIn("Work", self.b.profileList)
+
+    def test_rename_updates_active(self):
+        self.b.setActiveProfile("Work")
+        self.b.renameProfile("Work", "Office")
+        self.assertEqual(self.b.activeProfile, "Office")
+
+    def test_rename_missing_profile_rejected(self):
+        r = self.b.renameProfile("Nope", "Whatever")
+        self.assertFalse(r["ok"])
+
+    def test_rename_to_existing_name_rejected(self):
+        r = self.b.renameProfile("Work", "Gaming")
+        self.assertFalse(r["ok"])
+        self.assertIn("taken", r["error"].lower())
+
+    def test_rename_to_same_name_allowed(self):
+        # Renaming a profile to itself is a no-op success, not a collision.
+        r = self.b.renameProfile("Work", "Work")
+        self.assertTrue(r["ok"])
+        self.assertIn("Work", self.b.profileList)
+
+    def test_rename_empty_rejected(self):
+        r = self.b.renameProfile("Work", "   ")
+        self.assertFalse(r["ok"])
+        self.assertIn("empty", r["error"].lower())
+
+    def test_duplicate_profile_is_deep_copy(self):
+        self.b.setBinding("Work", "tartarus", "TAR_01", "Esc")
+        r = self.b.duplicateProfile("Work", "Work Copy")
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.b.activeProfile, "Work Copy")
+        # Mutating the copy must not bleed into the source (deep copy).
+        self.b.setBinding("Work Copy", "tartarus", "TAR_01", "Tab")
+        self.assertEqual(self.b.bindings["Work"]["tartarus"]["TAR_01"], "Esc")
+        self.assertEqual(self.b.bindings["Work Copy"]["tartarus"]["TAR_01"], "Tab")
+
+    def test_duplicate_missing_source_rejected(self):
+        r = self.b.duplicateProfile("Ghost", "X")
+        self.assertFalse(r["ok"])
+
+    def test_duplicate_to_existing_name_rejected(self):
+        r = self.b.duplicateProfile("Work", "Gaming")
+        self.assertFalse(r["ok"])
+        self.assertIn("taken", r["error"].lower())
+
+    def test_delete_profile(self):
+        r = self.b.deleteProfile("Work")
+        self.assertEqual(r, {"ok": True})
+        self.assertNotIn("Work", self.b.profileList)
+
+    def test_delete_active_reassigns_active(self):
+        self.b.setActiveProfile("Work")
+        self.b.deleteProfile("Work")
+        self.assertNotEqual(self.b.activeProfile, "Work")
+        self.assertIn(self.b.activeProfile, self.b.profileList)
+
+    def test_delete_missing_rejected(self):
+        r = self.b.deleteProfile("Ghost")
+        self.assertFalse(r["ok"])
+
+    def test_delete_last_profile_guard(self):
+        self.b.deleteProfile("Work")
+        self.b.deleteProfile("Default")
+        r = self.b.deleteProfile("Gaming")  # would be the last one
+        self.assertFalse(r["ok"])
+        self.assertIn("at least one", r["error"].lower())
+        self.assertEqual(self.b.profileList, ["Gaming"])
+
+    def test_set_active_profile(self):
+        self.b.setActiveProfile("Default")
+        self.assertEqual(self.b.activeProfile, "Default")
+
+    def test_set_active_invalid_is_ignored(self):
+        self.b.setActiveProfile("Ghost")
+        self.assertEqual(self.b.activeProfile, "Gaming")  # unchanged
+
+
+class BindingTests(_IsolatedBackendTest):
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+
+    def test_set_and_clear_binding(self):
+        self.b.setBinding("Gaming", "tartarus", "TAR_01", "F1")
+        self.assertEqual(self.b.bindings["Gaming"]["tartarus"]["TAR_01"], "F1")
+        self.b.clearBinding("Gaming", "tartarus", "TAR_01")
+        self.assertNotIn("TAR_01", self.b.bindings["Gaming"]["tartarus"])
+
+    def test_clear_unknown_binding_is_safe(self):
+        # No KeyError on a hotspot/profile/device that was never set.
+        self.b.clearBinding("Gaming", "tartarus", "NEVER_SET")
+        self.b.clearBinding("Ghost", "tartarus", "TAR_01")
+
+    def test_set_binding_creates_missing_containers(self):
+        self.b.setBinding("FreshProfile", "naga", "NAGA_01", "1")
+        self.assertEqual(self.b.bindings["FreshProfile"]["naga"]["NAGA_01"], "1")
+
+
+class ImportExportTests(_IsolatedBackendTest):
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+
+    def test_export_round_trips_through_import(self):
+        self.b.setBinding("Work", "tartarus", "TAR_01", "Esc")
+        exported = self.b.exportProfile("Work")
+        self.assertTrue(exported["ok"])
+        payload = json.loads(exported["json"])
+        self.assertEqual(payload["keyzer"], 1)
+        self.assertEqual(payload["name"], "Work")
+        # Re-import the exact JSON; name de-duplicates because "Work" exists.
+        imported = self.b.importProfile(exported["json"])
+        self.assertTrue(imported["ok"])
+        self.assertEqual(imported["name"], "Work 2")
+        self.assertEqual(self.b.bindings["Work 2"]["tartarus"]["TAR_01"], "Esc")
+
+    def test_export_missing_profile(self):
+        r = self.b.exportProfile("Ghost")
+        self.assertFalse(r["ok"])
+
+    def test_import_invalid_json(self):
+        r = self.b.importProfile("not json at all {")
+        self.assertFalse(r["ok"])
+        self.assertIn("json", r["error"].lower())
+
+    def test_import_wrong_shape(self):
+        r = self.b.importProfile(json.dumps({"hello": "world"}))
+        self.assertFalse(r["ok"])
+
+    def test_import_coerces_non_string_binds(self):
+        # Exported binds should be strings, but a hand-edited file might carry
+        # ints; import must coerce hotspot values to str.
+        payload = {"keyzer": 1, "name": "Numbers",
+                   "binds": {"tartarus": {"TAR_02": 5}, "naga": {}}}
+        r = self.b.importProfile(json.dumps(payload))
+        self.assertTrue(r["ok"])
+        val = self.b.bindings["Numbers"]["tartarus"]["TAR_02"]
+        self.assertEqual(val, "5")
+        self.assertIsInstance(val, str)
+
+    def test_import_default_name_when_absent(self):
+        payload = {"keyzer": 1, "binds": {"tartarus": {}, "naga": {}}}
+        r = self.b.importProfile(json.dumps(payload))
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["name"], "Imported")
+
+
+class CaptureAndGeometryTests(_IsolatedBackendTest):
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+
+    def test_capture_summary_totals(self):
+        summary = self.b.captureSummary()
+        self.assertEqual(set(summary), {"tartarus", "naga"})
+        for dev in ("tartarus", "naga"):
+            self.assertIn("captured", summary[dev])
+            self.assertIn("total", summary[dev])
+            self.assertIn("name", summary[dev])
+            self.assertIsInstance(summary[dev]["captured"], int)
+            self.assertIsInstance(summary[dev]["total"], int)
+            # 'total' is the sum of hotspots across all views from layouts.json.
+            self.assertGreater(summary[dev]["total"], 0)
+
+    def test_capture_summary_total_matches_hotspot_count(self):
+        summary = self.b.captureSummary()
+        # tartarus: 22 main + 8 thumb = 30 ; naga: 7 top + 12 side = 19.
+        self.assertEqual(summary["tartarus"]["total"], 30)
+        self.assertEqual(summary["naga"]["total"], 19)
+
+    def test_captures_source_default_in_isolation(self):
+        # No user captures.json in the temp XDG -> bundled default map is used.
+        self.assertEqual(self.b.capturesSource(), "default")
+
+    def test_hotspot_ids_collected_from_all_views(self):
+        self.assertIn("TAR_01", self.b._hotspot_ids["tartarus"])
+        self.assertIn("TAR_TPAD_NE", self.b._hotspot_ids["tartarus"])  # thumb view
+        self.assertIn("NAGA_12", self.b._hotspot_ids["naga"])          # side view
+        self.assertEqual(len(self.b._hotspot_ids["tartarus"]), 30)
+
+    def test_unavailable_filtering(self):
+        # Naga wheel-tilt hotspots are flagged unavailable in layouts.json.
+        self.assertEqual(self.b._unavailable["naga"], {"NAGA_WHL_L", "NAGA_WHL_R"})
+        self.assertEqual(self.b._unavailable["tartarus"], set())
+
+    def test_combos_collected(self):
+        self.assertEqual(
+            set(self.b._combos["tartarus"]),
+            {"TAR_TPAD_NE", "TAR_TPAD_SE", "TAR_TPAD_SW", "TAR_TPAD_NW"})
+        self.assertEqual(self.b._combos["tartarus"]["TAR_TPAD_NE"],
+                         ["TAR_TPAD_N", "TAR_TPAD_E"])
+        self.assertEqual(self.b._combos["naga"], {})
+
+
+class ApplyToHardwareTests(_IsolatedBackendTest):
+    """Graceful return contract — no running daemon required."""
+
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+
+    def test_apply_returns_well_shaped_dict(self):
+        # Whether the real daemon is up or not, the result is a graceful dict.
+        r = self.b.applyToHardware("Gaming", "")
+        self.assertIsInstance(r, dict)
+        self.assertEqual(set(r) >= {"ok", "message", "devices"}, True)
+        self.assertIsInstance(r["ok"], bool)
+        self.assertIsInstance(r["message"], str)
+        self.assertIsInstance(r["devices"], list)
+
+    def test_apply_empty_profile_reports_no_applicable_binds(self):
+        # 'Default' has empty bind maps. Because the bundled default capture map
+        # supplies device_name for each device, apply_profile still produces a
+        # per-device report (each "no applicable binds") rather than the empty
+        # 'Nothing to apply' branch — so devices is populated and ok is False,
+        # deterministically regardless of daemon state.
+        r = self.b.applyToHardware("Default", "")
+        self.assertFalse(r["ok"])
+        self.assertEqual({d["dev"] for d in r["devices"]}, {"tartarus", "naga"})
+        for d in r["devices"]:
+            self.assertFalse(d["ok"])
+            self.assertEqual(d["count"], 0)
+            self.assertEqual(d["error"], "no applicable binds")
+
+    def test_apply_nonexistent_profile(self):
+        r = self.b.applyToHardware("Ghost", "")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["devices"], [])
+
+    def test_apply_daemon_unreachable_is_graceful(self):
+        # Force the daemon-unreachable branch deterministically.
+        saved = engine.service_ready
+        engine.service_ready = lambda: False
+        try:
+            r = self.b.applyToHardware("Gaming", "")
+        finally:
+            engine.service_ready = saved
+        self.assertEqual(r["ok"], False)
+        self.assertEqual(r["devices"], [])
+        self.assertIsInstance(r["message"], str)
+        self.assertTrue(r["message"])  # carries the engine's _error reason
+
+    def test_apply_single_device_scope(self):
+        # Passing a device restricts the report to that device (or fewer).
+        r = self.b.applyToHardware("Gaming", "naga")
+        self.assertIsInstance(r, dict)
+        self.assertIsInstance(r.get("devices"), list)
+        for d in r["devices"]:
+            self.assertEqual(d["dev"], "naga")
+
+    def test_preset_name_for_slot(self):
+        name = self.b.presetNameFor("Gaming")
+        self.assertTrue(name.startswith("keyzer-"))
+        self.assertEqual(name, engine.preset_name_for("Gaming"))
+
+
+if __name__ == "__main__":
+    unittest.main()

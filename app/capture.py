@@ -28,6 +28,8 @@ import hashlib
 import json
 import os
 import select
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -165,8 +167,13 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
                     d.grab()
                     grabbed.append(d)
                 except OSError:
-                    pass  # another process holds it; capture still works ungrabbed
-            print("  (device input is grabbed — keys won't act normally until done)\n")
+                    pass
+            if grabbed:
+                print("  (device input is grabbed — keys won't act normally until done)\n")
+            else:
+                print("  ! couldn't grab the device — another program is holding it.\n"
+                      "    Quit (Ctrl-C), run:  input-remapper-control --command stop-all\n"
+                      "    then re-run this script.\n")
 
         i = 0
         while i < len(hotspots):
@@ -210,6 +217,22 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
             "usb": usb, "captured": captured}
 
 
+def _free_devices() -> None:
+    """input-remapper exclusively grabs the devices it's injecting on, which
+    starves our reads (keys leak to other windows and capture sees nothing). Stop
+    its injection first — best-effort, harmless if it isn't installed. Re-apply
+    your preset in KEYZER when you're done capturing."""
+    exe = shutil.which("input-remapper-control")
+    if not exe:
+        return
+    try:
+        subprocess.run([exe, "--command", "stop-all"], capture_output=True, timeout=10)
+        print("Released input-remapper devices for capture "
+              "(hit Apply in KEYZER again when done).\n")
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Record evdev codes for KEYZER hotspots.")
     ap.add_argument("--device", default="all",
@@ -234,6 +257,7 @@ def main() -> int:
             "      sudo usermod -aG input \"$USER\"\n"
             "  (then re-login). Running this whole script under sudo also works.")
 
+    _free_devices()
     existing = {}
     if args.output.exists():
         try:

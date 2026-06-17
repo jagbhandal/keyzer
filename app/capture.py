@@ -51,6 +51,12 @@ CAPTURES = CONFIG_DIR / "captures.json"
 # EV_REL with a nonzero value = a wheel tilt / scroll notch (its sign is the
 # direction, stored as analog_threshold so input-remapper can match it).
 IGNORED_TYPES = {ecodes.EV_SYN, ecodes.EV_MSC}
+# Only wheel scroll/tilt is a bindable relative input — NEVER pointer motion
+# (REL_X/REL_Y), or nudging the mouse mid-capture maps movement onto a key.
+_WHEEL_CODES = {ecodes.REL_WHEEL, ecodes.REL_HWHEEL}
+for _hr in ("REL_WHEEL_HI_RES", "REL_HWHEEL_HI_RES"):
+    if hasattr(ecodes, _hr):
+        _WHEEL_CODES.add(getattr(ecodes, _hr))
 
 
 def device_hash(dev: "evdev.InputDevice") -> str:
@@ -110,7 +116,8 @@ def read_press(nodes, fd_to_dev, grabbed):
                     return "event", {"type": ev.type, "code": ev.code,
                                      "origin_hash": device_hash(dev),
                                      "node": dev.path, "name": code_name(ev.type, ev.code)}
-                if ev.type == ecodes.EV_REL and ev.value != 0:  # wheel tilt / notch
+                if (ev.type == ecodes.EV_REL and ev.value != 0
+                        and ev.code in _WHEEL_CODES):  # wheel only, never pointer motion
                     return "event", {"type": ev.type, "code": ev.code,
                                      "analog_threshold": 1 if ev.value > 0 else -1,
                                      "origin_hash": device_hash(dev),

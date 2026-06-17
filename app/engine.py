@@ -29,6 +29,9 @@ CONTROL = "input-remapper-control"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "keyzer"
 CAPTURES = CONFIG_DIR / "captures.json"
 PROFILES = CONFIG_DIR / "profiles.json"
+# Bundled, machine-portable default key map (origin_hash stripped) so a fresh
+# clone works without running capture.py. The user's own capture overrides it.
+DEFAULT_CAPTURES = Path(__file__).resolve().parent.parent / "captures.default.json"
 
 
 def save_json(path: Path, data) -> None:
@@ -191,6 +194,9 @@ def build_preset(binds: dict, captures: dict) -> tuple[list[dict], list[str]]:
         if not cap:
             warnings.append(f"{hotspot}: not captured yet — run capture.py")
             continue
+        if int(cap.get("type", 0)) == 2 and int(cap.get("code", -1)) in (0, 1, 2):
+            warnings.append(f"{hotspot}: captured pointer movement, not a button — re-capture it")
+            continue  # never remap REL_X/Y/Z — that would break the pointer
         try:
             target, symbol = output(value)
         except (Untranslatable, AttributeError, TypeError, ValueError) as exc:
@@ -264,13 +270,24 @@ def set_autoload(device_key: str, preset: str) -> None:
 
 
 def load_captures(path: Path = CAPTURES) -> dict:
-    if not path.exists():
+    """User captures if present, else the bundled per-device defaults."""
+    p = path if path.exists() else DEFAULT_CAPTURES
+    if not p.exists():
         return {}
     try:
-        return {k: v for k, v in json.loads(path.read_text()).items()
+        return {k: v for k, v in json.loads(p.read_text()).items()
                 if not k.startswith("_")}
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def captures_origin(path: Path = CAPTURES) -> str:
+    """Where the active capture map comes from: 'user', 'default', or 'none'."""
+    if path.exists():
+        return "user"
+    if DEFAULT_CAPTURES.exists():
+        return "default"
+    return "none"
 
 
 def apply_profile(profile: str, binds_by_device: dict, captures: dict,

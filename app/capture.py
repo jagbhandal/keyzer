@@ -226,6 +226,8 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
         for d in nodes:
             d.close()
 
+    # prune stale entries (e.g. previously-captured diagonals/tilt now skipped)
+    captured = {k: v for k, v in captured.items() if k in {h["id"] for h in hotspots}}
     return {"device_name": name, "all_names": sorted({d.name for d in nodes}),
             "usb": usb, "captured": captured}
 

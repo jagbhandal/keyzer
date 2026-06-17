@@ -24,6 +24,17 @@ SRC = (Path(sys.argv[1]) if len(sys.argv) > 1 else
        Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
        / "keyzer" / "captures.json")
 OUT = Path("/tmp/keyzer-captures-default.json")
+try:
+    _LAYOUTS = json.loads((Path(__file__).resolve().parent.parent / "layouts.json").read_text())
+except Exception:
+    _LAYOUTS = {}
+
+
+def _skip_ids(dev: str) -> set:
+    """Hotspots that are derived/unavailable, so never part of the shared default."""
+    lay = _LAYOUTS.get(dev, {})
+    return {k["id"] for v in lay.get("views", {}).values()
+            for k in v.get("keys", []) if k.get("combo") or k.get("unavailable")}
 
 
 def main() -> int:
@@ -36,8 +47,11 @@ def main() -> int:
     for dev, v in data.items():
         if dev.startswith("_") or not isinstance(v, dict):
             continue
+        skip = _skip_ids(dev)
         caps = {}
         for hid, c in (v.get("captured") or {}).items():
+            if hid in skip:
+                continue
             entry = {"type": int(c["type"]), "code": int(c["code"])}
             if c.get("analog_threshold"):
                 entry["analog_threshold"] = int(c["analog_threshold"])

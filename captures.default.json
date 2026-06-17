@@ -1,0 +1,187 @@
+{
+  "_comment": "Bundled default evdev codes per hotspot, origin_hash stripped so it's portable across machines. KEYZER uses this when the user hasn't run capture.py. Regenerate with tools/make_defaults.py.",
+  "tartarus": {
+    "device_name": "Razer Razer Tartarus Pro",
+    "usb": "1532:0244",
+    "captured": {
+      "TAR_01": {
+        "type": 1,
+        "code": 2
+      },
+      "TAR_02": {
+        "type": 1,
+        "code": 3
+      },
+      "TAR_03": {
+        "type": 1,
+        "code": 4
+      },
+      "TAR_04": {
+        "type": 1,
+        "code": 5
+      },
+      "TAR_05": {
+        "type": 1,
+        "code": 6
+      },
+      "TAR_06": {
+        "type": 1,
+        "code": 15
+      },
+      "TAR_07": {
+        "type": 1,
+        "code": 16
+      },
+      "TAR_08": {
+        "type": 1,
+        "code": 17
+      },
+      "TAR_09": {
+        "type": 1,
+        "code": 18
+      },
+      "TAR_10": {
+        "type": 1,
+        "code": 19
+      },
+      "TAR_11": {
+        "type": 1,
+        "code": 58
+      },
+      "TAR_12": {
+        "type": 1,
+        "code": 30
+      },
+      "TAR_13": {
+        "type": 1,
+        "code": 31
+      },
+      "TAR_14": {
+        "type": 1,
+        "code": 32
+      },
+      "TAR_15": {
+        "type": 1,
+        "code": 33
+      },
+      "TAR_16": {
+        "type": 1,
+        "code": 42
+      },
+      "TAR_17": {
+        "type": 1,
+        "code": 44
+      },
+      "TAR_18": {
+        "type": 1,
+        "code": 45
+      },
+      "TAR_19": {
+        "type": 1,
+        "code": 46
+      },
+      "TAR_20": {
+        "type": 1,
+        "code": 57
+      },
+      "TAR_WHEEL": {
+        "type": 1,
+        "code": 274
+      },
+      "TAR_THUMB": {
+        "type": 1,
+        "code": 56
+      },
+      "TAR_TPAD_N": {
+        "type": 1,
+        "code": 103
+      },
+      "TAR_TPAD_E": {
+        "type": 1,
+        "code": 106
+      },
+      "TAR_TPAD_S": {
+        "type": 1,
+        "code": 108
+      },
+      "TAR_TPAD_W": {
+        "type": 1,
+        "code": 105
+      }
+    }
+  },
+  "naga": {
+    "device_name": "Razer Naga Pro",
+    "usb": "1532:008f",
+    "captured": {
+      "NAGA_L": {
+        "type": 1,
+        "code": 272
+      },
+      "NAGA_R": {
+        "type": 1,
+        "code": 273
+      },
+      "NAGA_WHL": {
+        "type": 1,
+        "code": 274
+      },
+      "NAGA_DPI1": {
+        "type": 1,
+        "code": 183
+      },
+      "NAGA_DPI2": {
+        "type": 1,
+        "code": 184
+      },
+      "NAGA_01": {
+        "type": 1,
+        "code": 2
+      },
+      "NAGA_02": {
+        "type": 1,
+        "code": 3
+      },
+      "NAGA_03": {
+        "type": 1,
+        "code": 4
+      },
+      "NAGA_04": {
+        "type": 1,
+        "code": 5
+      },
+      "NAGA_05": {
+        "type": 1,
+        "code": 6
+      },
+      "NAGA_06": {
+        "type": 1,
+        "code": 7
+      },
+      "NAGA_07": {
+        "type": 1,
+        "code": 8
+      },
+      "NAGA_08": {
+        "type": 1,
+        "code": 9
+      },
+      "NAGA_09": {
+        "type": 1,
+        "code": 10
+      },
+      "NAGA_10": {
+        "type": 1,
+        "code": 11
+      },
+      "NAGA_11": {
+        "type": 1,
+        "code": 12
+      },
+      "NAGA_12": {
+        "type": 1,
+        "code": 13
+      }
+    }
+  }
+}

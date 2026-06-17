@@ -89,8 +89,14 @@ Rectangle {
         backend.setBinding(curProfile, curDev, selKey, v)
         markDirty()
         var r = backend.applyToHardware(curProfile, curDev)   // set AND push live, one step
-        if (r.ok) showToast(selKey.replace(/_/g, " ") + " → " + v + "  · live")
-        else { var e = (r.devices && r.devices.length) ? (r.devices[0].error || r.message) : r.message
+        var warn = "", devs = r.devices || []                 // did THIS bind get dropped?
+        for (var i = 0; i < devs.length; i++) {
+            var ws = devs[i].warnings || []
+            for (var j = 0; j < ws.length; j++) if (ws[j].indexOf(selKey) === 0) warn = ws[j]
+        }
+        if (warn !== "") showToast("⚠ not applied — " + warn)
+        else if (r.ok) showToast(selKey.replace(/_/g, " ") + " → " + v + "  · live")
+        else { var e = devs.length ? (devs[0].error || r.message) : r.message
                showToast("Bound · " + (e || "not pushed live")) }
     }
     function clearBinding() {
@@ -135,6 +141,7 @@ Rectangle {
         else if (event.key >= Qt.Key_0 && event.key <= Qt.Key_9) k = String.fromCharCode(event.key)   // base digit (Shift-proof)
         else if (event.text && event.text.length === 1) k = event.text.toUpperCase()
         else k = ""
+        if (k === "+") k = "plus"   // don't clash with the chord delimiter
         if (k && k !== "") parts.push(k)
         return parts.join("+")
     }

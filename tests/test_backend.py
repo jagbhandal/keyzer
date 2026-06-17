@@ -336,9 +336,17 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
         # 'Default' has empty bind maps. Because the bundled default capture map
         # supplies device_name for each device, apply_profile still produces a
         # per-device report (each "no applicable binds") rather than the empty
-        # 'Nothing to apply' branch — so devices is populated and ok is False,
-        # deterministically regardless of daemon state.
-        r = self.b.applyToHardware("Default", "")
+        # 'Nothing to apply' branch. Force the daemon-reachable + layout-synced
+        # path so this exercises the device loop deterministically on any box
+        # (no real daemon or xmodmap required).
+        saved_ready, saved_sync = engine.service_ready, engine.sync_keyboard_layout
+        engine.service_ready = lambda: True
+        engine.sync_keyboard_layout = lambda: {"ok": True, "count": 1,
+                                               "path": "/tmp/xmodmap.json", "error": None}
+        try:
+            r = self.b.applyToHardware("Default", "")
+        finally:
+            engine.service_ready, engine.sync_keyboard_layout = saved_ready, saved_sync
         self.assertFalse(r["ok"])
         self.assertEqual({d["dev"] for d in r["devices"]}, {"tartarus", "naga"})
         for d in r["devices"]:

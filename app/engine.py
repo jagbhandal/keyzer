@@ -83,15 +83,28 @@ _UNSUPPORTED = {
     "dpi1": "DPI is a hardware function — set it via OpenRazer, not a remap",
     "dpi2": "DPI is a hardware function — set it via OpenRazer, not a remap",
 }
+# Punctuation/symbol chars -> X keysym names. input-remapper wants "minus", not
+# "-"; the literal char is rejected, so a combo like Ctrl+- must become Control_L+minus.
+_PUNCT = {
+    "-": "minus", "_": "underscore", "=": "equal", "+": "plus",
+    "[": "bracketleft", "]": "bracketright", "{": "braceleft", "}": "braceright",
+    ";": "semicolon", ":": "colon", "'": "apostrophe", '"': "quotedbl",
+    ",": "comma", ".": "period", "/": "slash", "?": "question",
+    "\\": "backslash", "|": "bar", "`": "grave", "~": "asciitilde",
+    "!": "exclam", "@": "at", "#": "numbersign", "$": "dollar", "%": "percent",
+    "^": "asciicircum", "&": "ampersand", "*": "asterisk",
+    "(": "parenleft", ")": "parenright", " ": "space",
+}
 # Keysyms KEYZER may emit, so validation works even where `xmodmap` is absent
 # (the headless dev box); the user's session validates the full set at apply.
 _KNOWN_KEYSYMS = (
     set("abcdefghijklmnopqrstuvwxyz0123456789")
-    | {"space", "Tab", "Return", "Escape", "BackSpace", "Delete", "Insert",
+    | set(_PUNCT.values())            # supplies space, minus, equal, plus, …
+    | {"Tab", "Return", "Escape", "BackSpace", "Delete", "Insert",
        "Home", "End", "Prior", "Next", "Page_Up", "Page_Down",
        "Up", "Down", "Left", "Right", "Caps_Lock",
        "Shift_L", "Shift_R", "Control_L", "Control_R",
-       "Alt_L", "Alt_R", "Super_L", "Super_R", "minus", "equal", "plus", "disable"}
+       "Alt_L", "Alt_R", "Super_L", "Super_R", "disable"}
     | {f"F{n}" for n in range(1, 13)}
 )
 
@@ -156,6 +169,8 @@ def _translate_token(tok: str) -> str:
     t = tok.strip()
     if t.lower() in _LABELS:
         return _LABELS[t.lower()]
+    if t in _PUNCT:                   # "-" -> "minus", "=" -> "equal", ...
+        return _PUNCT[t]
     if re.fullmatch(r"[A-Za-z]", t):  # single letter -> lowercase keysym
         return t.lower()
     return t  # digit, named keysym, or symbol — validated by the caller
@@ -273,6 +288,37 @@ def resolve_key(device_name: str, keys: list[str] | None = None) -> str:
     return device_name  # fall back; the daemon may still resolve it
 
 
+def sync_keyboard_layout() -> dict:
+    """Ensure input-remapper's ``xmodmap.json`` exists (and is current).
+
+    The root daemon validates every symbolic output (``w``, ``Control_L``,
+    ``minus`` …) against the key-name map in ``xmodmap.json``. With no such file,
+    EVERY keysym mapping fails validation server-side and is silently dropped, so
+    the keys fall through to their hardware defaults. That file is normally
+    written by the input-remapper GUI — which KEYZER replaces — so KEYZER has to
+    trigger the write itself.
+
+    Rather than reproduce input-remapper's keymap parsing (a brittle coupling to
+    its internals that would fail *silently wrong* on an upgrade), we let
+    input-remapper do it: ``input-remapper-control --symbol-names`` runs in a
+    non-service process, which populates the layout from ``xmodmap -pke`` and
+    writes ``xmodmap.json`` with its own, version-matched code — to the exact
+    path the daemon reads. No daemon required. Returns ``{ok, path, error}``."""
+    out = _ir_config_dir() / "xmodmap.json"
+    fail = lambda msg: {"ok": False, "path": str(out), "error": msg}
+    if not available():
+        return fail("input-remapper isn't installed")
+    _control("--symbol-names")  # side effect: writes xmodmap.json when xmodmap works
+    if out.exists():
+        return {"ok": True, "path": str(out), "error": None}
+    # The file wasn't produced — diagnose why, without reproducing the parse.
+    if not shutil.which("xmodmap"):
+        return fail("xmodmap isn't installed — install x11-xserver-utils so the "
+                    "remapper daemon can resolve key names")
+    return fail("couldn't read the keyboard layout (`xmodmap -pke` found none — "
+                "is an X/XWayland session active?)")
+
+
 def set_autoload(device_key: str, preset: str) -> None:
     """Mark a preset to auto-load at login (config.json autoload: key -> preset)."""
     cfg = _ir_config_dir() / "config.json"
@@ -317,6 +363,14 @@ def apply_profile(profile: str, binds_by_device: dict, captures: dict,
     if not service_ready():
         return {"_error": "input-remapper service isn't running "
                           "(start it, e.g. `systemctl start input-remapper`)"}
+
+    # Refresh the key-name map the (root) daemon validates symbols against. Without
+    # it every keysym mapping is dropped server-side and keys emit their defaults.
+    layout = sync_keyboard_layout()
+    if not layout["ok"] and not os.path.exists(layout["path"]):
+        return {"_error": "Couldn't resolve key names for the remapper daemon — "
+                          f"{layout['error']}. Bindings can't be applied until this "
+                          "is fixed (keys would silently fall through to defaults)."}
 
     keys = device_keys()
     preset = preset_name_for(profile)

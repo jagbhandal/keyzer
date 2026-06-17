@@ -77,6 +77,12 @@ class OutputTranslationTests(unittest.TestCase):
         self.assertEqual(engine.output("Ctrl+Shift+1"),
                          ("keyboard", "Control_L+Shift_L+1"))
 
+    def test_held_letter_combo(self):
+        # W+A -> input-remapper holds both while the key is held (diagonal movement);
+        # extra spaces are tolerated.
+        self.assertEqual(engine.output("W+A"), ("keyboard", "w+a"))
+        self.assertEqual(engine.output("w + a"), ("keyboard", "w+a"))
+
     def test_already_valid_symbol_passthrough(self):
         self.assertEqual(engine.output("Control_L+c"), ("keyboard", "Control_L+c"))
 

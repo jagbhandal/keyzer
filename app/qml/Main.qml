@@ -880,13 +880,22 @@ Rectangle {
                             width: parent.width; spacing: 10; height: 54
                             Rectangle {
                                 width: parent.width - 90; height: 54; radius: 10; color: root.bg0
-                                border.width: 1; border.color: root.listening ? root.green : root.line2
-                                Text {
-                                    anchors.centerIn: parent
-                                    text: root.listening
-                                          ? (root.capValue !== "" ? root.capValue : "press a key…")
-                                          : (root.capValue !== "" ? root.capValue : (root.curBinding() !== "" ? root.curBinding() : "—"))
-                                    color: root.listening ? root.green : root.txt; font.pixelSize: 18; font.bold: true
+                                border.width: 1; border.color: (root.listening || bindField.activeFocus) ? root.green : root.line2
+                                TextField {
+                                    id: bindField
+                                    anchors.fill: parent; anchors.margins: 2; leftPadding: 14
+                                    verticalAlignment: TextInput.AlignVCenter
+                                    font.pixelSize: 17; font.bold: true
+                                    color: root.listening ? root.green : root.txt
+                                    placeholderText: root.curBinding() !== "" ? root.curBinding()
+                                                     : (root.listening ? "press a key…" : "press Listen, or type — e.g. W+A, Ctrl+C")
+                                    selectByMouse: true
+                                    background: Item {}
+                                    onTextEdited: root.capValue = text                 // typing IS the binding (e.g. W+A held together)
+                                    onAccepted: root.applyBinding()
+                                    Connections { target: root; function onCapValueChanged() {
+                                        if (bindField.text !== root.capValue) bindField.text = root.capValue } }   // reflect Listen / key-select
+                                    Component.onCompleted: text = root.capValue
                                 }
                             }
                             Rectangle {

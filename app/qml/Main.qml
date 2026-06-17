@@ -42,6 +42,8 @@ Rectangle {
     property var applyResult: null          // last Apply-to-hardware report
     property var capSummary: ({})            // per-device captured-key counts
     property bool qaLive: false              // offscreen QA: force the LIVE pill visible
+    property string capSource: "none"        // 'user' | 'default' | 'none' — drives the calibrate hint
+    property bool hintDismissed: false
 
     // ---------- derived ----------
     readonly property var device: backend.layouts[curDev]
@@ -129,6 +131,7 @@ Rectangle {
     Component.onCompleted: {
         curView = firstView(curDev)
         capSummary = backend.captureSummary()
+        capSource = backend.capturesSource()
         curProfile = backend.activeProfile
         // offscreen QA: drive initial state from env vars
         var q = backend.qaState()
@@ -150,6 +153,7 @@ Rectangle {
         if (q.KEYZER_DIALOG === "name") nameDialog.open("create", "New profile", "")
         if (q.KEYZER_DIALOG === "import") importDialog.open()
         if (q.KEYZER_LIVE) qaLive = true
+        if (q.KEYZER_HINT) capSource = "default"
         if (q.KEYZER_LIGHTPANEL) lightingOverlay.openDemo()
     }
 
@@ -430,10 +434,34 @@ Rectangle {
         Text { anchors { right: parent.right; rightMargin: 18; verticalCenter: parent.verticalCenter }text: root.dirtyText; color: root.muted; font.pixelSize: 12 }
     }
 
+    // ================= first-run calibration hint =================
+    Item {
+        id: hintBar
+        anchors { top: header.bottom; left: parent.left; right: parent.right }
+        height: (root.capSource === "default" && !root.hintDismissed) ? 34 : 0
+        visible: height > 0; clip: true
+        Rectangle {
+            anchors.fill: parent; color: root.alpha(root.amber, 0.13)
+            Rectangle { anchors { left: parent.left; right: parent.right; bottom: parent.bottom } height: 1; color: root.alpha(root.amber, 0.45) }
+        }
+        Row {
+            spacing: 8
+            anchors { left: parent.left; leftMargin: 18; verticalCenter: parent.verticalCenter }
+            Text { text: "⚠"; color: root.amber; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
+            Text { text: "Using the bundled default key map — not calibrated to this machine. If Apply hits the wrong key or device, run  python3 app/capture.py"
+                color: "#e8d9b0"; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
+        }
+        Text {
+            anchors { right: parent.right; rightMargin: 16; verticalCenter: parent.verticalCenter }
+            text: "✕ dismiss"; color: root.muted; font.pixelSize: 11
+            MouseArea { anchors.fill: parent; anchors.margins: -6; cursorShape: Qt.PointingHandCursor; onClicked: root.hintDismissed = true }
+        }
+    }
+
     // ================= body =================
     Item {
         id: body
-        anchors { top: header.bottom; bottom: footer.top; left: parent.left; right: parent.right }
+        anchors { top: hintBar.bottom; bottom: footer.top; left: parent.left; right: parent.right }
 
         // ---------- left rail ----------
         Rectangle {

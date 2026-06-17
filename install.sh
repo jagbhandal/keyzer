@@ -56,6 +56,7 @@ Icon=keyzer
 Terminal=false
 Categories=Utility;Settings;HardwareSettings;
 Keywords=razer;remap;keybind;keymap;tartarus;naga;
+StartupWMClass=keyzer
 EOF
   echo "   Installed. Ensure ~/.local/bin is on your PATH to run 'keyzer'."
 fi

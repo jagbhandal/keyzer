@@ -14,18 +14,26 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import QTimer, QUrl
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QIcon
 from PySide6.QtQuick import QQuickView
 
 from backend import Backend
 
 APP_DIR = Path(__file__).resolve().parent
+ICON = APP_DIR.parent / "packaging" / "keyzer.svg"
 
 
 def main() -> int:
     app = QGuiApplication(sys.argv)
     app.setApplicationName("KEYZER")
     app.setOrganizationName("KEYZER")
+    # Show KEYZER's own icon instead of a generic cogwheel. On Wayland/GNOME the
+    # taskbar icon comes from the matching .desktop file, so the window's app-id
+    # must equal its basename ("keyzer.desktop" -> install.sh installs it); on
+    # X11/XWayland the window icon below is used directly.
+    app.setDesktopFileName("keyzer")
+    if ICON.exists():
+        app.setWindowIcon(QIcon(str(ICON)))
 
     view = QQuickView()
     backend = Backend()

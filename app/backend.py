@@ -743,5 +743,5 @@ class Backend(QObject):
                  "KEYZER_LIGHTING", "KEYZER_ALIGN", "KEYZER_RESULT",
                  "KEYZER_DIALOG", "KEYZER_LIVE", "KEYZER_LIGHTPANEL", "KEYZER_HINT",
                  "KEYZER_LISTEN", "KEYZER_CALIBRATE", "KEYZER_SHIFT", "KEYZER_COMPARE",
-                 "KEYZER_SHOT")
+                 "KEYZER_SHOT", "KEYZER_LIGHTFX", "KEYZER_LIGHTZONE")
         return {n: os.environ.get(n, "") for n in names}

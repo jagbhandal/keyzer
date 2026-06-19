@@ -403,6 +403,11 @@ Rectangle {
         if (q.KEYZER_LIVE) qaLive = true
         if (q.KEYZER_HINT) capSource = "default"
         if (q.KEYZER_LIGHTPANEL) root.openLightingDemo()
+        if (q.KEYZER_LIGHTFX) {   // QA/screenshots: seed a specific effect (+ optional zone) so each contextual state renders
+            if (q.KEYZER_LIGHTZONE) root.lightZone = q.KEYZER_LIGHTZONE
+            var lseed = Object.assign({}, root.curLight(), { effect: q.KEYZER_LIGHTFX })
+            var lmap = Object.assign({}, root.lightState); lmap[root.lightKey()] = lseed; root.lightState = lmap
+        }
         if (q.KEYZER_SHOT) root.shotMode = true   // screenshot render — drop the demo badge
         if (q.KEYZER_SHIFT === "1") root.bindLayer = "shift"   // QA: render the Hypershift layer
         if (q.KEYZER_COMPARE) root.compareProfile = q.KEYZER_COMPARE   // QA: render profile-diff

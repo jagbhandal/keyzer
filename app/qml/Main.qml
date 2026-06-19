@@ -126,6 +126,18 @@ Rectangle {
     function setLightBright(pct) { var r = backend.setLightBrightness(curDev, Math.round(pct)); if (!r.ok) showToast(r.error || "brightness failed") }
     function pickLightWheel(mx, my) { var dx = mx - 75, dy = my - 75; lcS = Math.max(0, Math.min(1, Math.sqrt(dx * dx + dy * dy) / 72)); lcH = (Math.atan2(dy, dx) / (2 * Math.PI) + 1) % 1 }
     function hex2(c) { var h = Math.round(c * 255).toString(16); return h.length < 2 ? "0" + h : h }
+    function curHex() { return "#" + hex2(lcColor.r) + hex2(lcColor.g) + hex2(lcColor.b) }
+    function setLightHex(s) {   // parse a typed/pasted hex, move the wheel + value to match, apply it live
+        s = (s || "").trim().replace(/^#/, "")
+        if (s.length === 3) s = s[0] + s[0] + s[1] + s[1] + s[2] + s[2]   // #abc -> #aabbcc
+        if (!/^[0-9a-fA-F]{6}$/.test(s)) { showToast("Enter a hex colour like #44d62c"); return false }
+        var r = parseInt(s.substr(0, 2), 16), g = parseInt(s.substr(2, 2), 16), b = parseInt(s.substr(4, 2), 16)
+        var c = Qt.rgba(r / 255, g / 255, b / 255, 1)
+        if (c.hsvHue >= 0) lcH = c.hsvHue   // hue is undefined (-1) for greys; keep the wheel angle then
+        lcS = c.hsvSaturation; lcV = c.hsvValue
+        applyLighting({ r: r, g: g, b: b })
+        return true
+    }
     function openLightingDemo() {   // offscreen QA: drive the lighting inspector with sample devices
         lightInfo = { error: null, devices: [
             { id: "tartarus", name: "Razer Tartarus Pro", brightness: 80, effects: ["static", "reactive", "none"] },
@@ -1188,9 +1200,27 @@ Rectangle {
                                     onPositionChanged: function (m) { if (pressed) root.pickLightWheel(m.x, m.y) }
                                     onReleased: root.applyLighting({ r: Math.round(root.lcColor.r * 255), g: Math.round(root.lcColor.g * 255), b: Math.round(root.lcColor.b * 255) }) }
                             }
-                            Rectangle { width: parent.width; height: 30; radius: 7; color: root.lcColor; border.width: 1; border.color: root.line2
-                                Text { anchors.centerIn: parent; text: "#" + root.hex2(root.lcColor.r) + root.hex2(root.lcColor.g) + root.hex2(root.lcColor.b)
-                                    color: root.lcV > 0.55 ? "#101010" : "#f0f0f0"; font.pixelSize: 12; font.bold: true } }
+                            Rectangle { width: parent.width; height: 30; radius: 7; color: root.lcColor; border.width: 1; border.color: hexField.activeFocus ? root.green : root.line2
+                                // editable hex — select to copy, type/paste a value + Enter to apply
+                                TextInput {
+                                    id: hexField
+                                    anchors.centerIn: parent; width: parent.width - 16
+                                    text: root.curHex()
+                                    color: root.lcV > 0.55 ? "#101010" : "#f0f0f0"; font.pixelSize: 12; font.bold: true
+                                    horizontalAlignment: TextInput.AlignHCenter
+                                    selectByMouse: true; maximumLength: 9   // room for a space-padded paste that trim() cleans
+                                    inputMethodHints: Qt.ImhPreferLatin | Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                                    // single commit site: Enter just drops focus, so both Enter and click-away
+                                    // go through the one guard below (commit once if changed, else snap back).
+                                    onActiveFocusChanged: {
+                                        if (activeFocus) selectAll()
+                                        else {
+                                            if (text.replace("#", "").toLowerCase() !== root.curHex().replace("#", "").toLowerCase()) root.setLightHex(text)
+                                            text = Qt.binding(function () { return root.curHex() })
+                                        }
+                                    }
+                                    onAccepted: focus = false
+                                } }
                             Rectangle {   // value slider
                                 width: parent.width; height: 16; radius: 8
                                 gradient: Gradient { orientation: Gradient.Horizontal
@@ -1203,7 +1233,7 @@ Rectangle {
                                     onReleased: root.applyLighting({ r: Math.round(root.lcColor.r * 255), g: Math.round(root.lcColor.g * 255), b: Math.round(root.lcColor.b * 255) }) }
                             }
                             Text { width: parent.width; wrapMode: Text.WordWrap; color: root.muted2; font.pixelSize: 10
-                                text: "Drag to preview · release to apply" }
+                                text: "Drag to preview · release to apply · or type/paste a hex above + Enter" }
                         }
                         // SPEED — React only
                         Text { visible: root.lightUsesSpeed(); text: "SPEED"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }

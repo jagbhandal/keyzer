@@ -192,7 +192,7 @@ def set_effect(kid: str, effect: str, color=(68, 214, 44), color2=(34, 200, 255)
                      1500: c.REACTIVE_1500MS, 2000: c.REACTIVE_2000MS}.get(react_ms, c.REACTIVE_1000MS)
             fx.reactive(r, g, b, speed)
         elif effect == "wave":
-            fx.wave(c.WAVE_LEFT if direction == "left" else c.WAVE_RIGHT)
+            fx.wave(c.WAVE_RIGHT if direction == "right" else c.WAVE_LEFT)
         elif effect == "none":
             fx.none()
         else:

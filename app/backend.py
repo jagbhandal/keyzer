@@ -704,11 +704,13 @@ class Backend(QObject):
                 for k, v in d.items()]
         return {"error": None, "devices": devs}
 
-    @Slot(str, str, int, int, int, str, result="QVariant")
-    def setLightEffect(self, dev: str, effect: str, r: int, g: int, b: int, zone: str) -> dict:
+    @Slot(str, str, int, int, int, str, str, int, result="QVariant")
+    def setLightEffect(self, dev: str, effect: str, r: int, g: int, b: int, zone: str,
+                       direction: str = "left", react_ms: int = 1000) -> dict:
         if self._demo:
             return {"ok": True}
-        return lighting.set_effect(dev, effect, (r, g, b), zone=zone)
+        return lighting.set_effect(dev, effect, (r, g, b), zone=zone,
+                                   direction=direction, react_ms=react_ms)
 
     @Slot(str, int, result="QVariant")
     def setLightBrightness(self, dev: str, pct: int) -> dict:

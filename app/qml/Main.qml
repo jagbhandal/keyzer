@@ -68,14 +68,30 @@ Rectangle {
         }
         return out
     }
-    function recordLight(dev, eff, r, g, b) {           // reassign (not mutate) so bindings refresh
-        var m = Object.assign({}, lightState); m[dev] = { effect: eff, r: r, g: g, b: b }; lightState = m
+    // lightState is keyed by "device|zone" — OpenRazer can't read effects back, so it's
+    // KEYZER's own record of the applied look, blank for a zone until it's set this session.
+    function lightKey() { return curDev + "|" + lightZone }
+    function curLight() {
+        return lightState[lightKey()] || { effect: "", r: 68, g: 214, b: 44, direction: "left", react_ms: 1000 }
     }
-    // colour the on-device glow with what's actually applied: steady for Solid,
-    // breathing for Pulse, hue-cycling only for Rainbow, dark for Off.
+    // which contextual controls the current effect actually uses (the rest stay hidden)
+    function lightUsesColour() { var e = curLight().effect   // Solid, React, and any single-colour Pulse (not random)
+        return e === "static" || e === "reactive" || (e.indexOf("breath") === 0 && e !== "breath_random") }
+    function lightUsesSpeed() { return curLight().effect === "reactive" }
+    function lightUsesDirection() { return curLight().effect === "wave" }
+    function speedLabel(ms) { return ms <= 500 ? "Fast" : (ms >= 1500 ? "Slow" : "Medium") }
+    function applyLighting(patch) {   // merge one change into the current look, push it live, record it
+        var s = Object.assign({}, curLight(), patch)
+        if (!s.effect) s.effect = "static"   // a colour/param change before an effect is picked -> Solid
+        var r = backend.setLightEffect(curDev, s.effect, s.r, s.g, s.b, lightZone, s.direction, s.react_ms)
+        if (!r.ok) { showToast(r.error || "lighting failed"); return }
+        var m = Object.assign({}, lightState); m[lightKey()] = s; lightState = m
+        showToast(lightLabel() + " → " + effectLabel(s.effect))
+    }
+    // colour the on-device glow with the current zone's applied look (approximate preview)
     function glowColor() {
-        var s = lightState[curDev]
-        if (!s || s.effect === "none") return Qt.rgba(0, 0, 0, 0)
+        var s = lightState[lightKey()]
+        if (!s || !s.effect || s.effect === "none") return Qt.rgba(0, 0, 0, 0)
         if (s.effect === "spectrum") return Qt.hsla(((litStep * 8) % 360) / 360, 0.9, 0.55, 0.9)
         var a = (s.effect && s.effect.indexOf("breath") === 0) ? (0.3 + 0.55 * pulse) : 0.85
         return Qt.rgba(s.r / 255, s.g / 255, s.b / 255, a)
@@ -92,7 +108,7 @@ Rectangle {
     readonly property color lcColor: Qt.hsva(lcH, lcS, lcV, 1)
     readonly property var lightSwatches: [["Razer Green", 68, 214, 44], ["White", 255, 255, 255],
         ["Red", 230, 40, 40], ["Blue", 40, 120, 255], ["Cyan", 34, 200, 255], ["Pink", 220, 40, 200],
-        ["Amber", 230, 170, 40], ["Off", 0, 0, 0]]
+        ["Amber", 230, 170, 40]]
     function lightDev() {           // the lightInfo entry for the on-stage device, or null
         var ds = lightInfo.devices || []
         for (var i = 0; i < ds.length; i++) if (ds[i].id === curDev) return ds[i]
@@ -107,18 +123,6 @@ Rectangle {
     function lightLabel() { var d = lightDev(); return (d ? d.name : curDev) + (lightZone ? " · " + zoneLabel(lightZone) : "") }
     function enterLighting() { lightInfo = backend.lightingDevices(); lightZone = ""; lcWheel = false; var d = lightDev(); lightBright = d ? d.brightness : 100; lightSync = backend.lightingSync() }
     function syncLightDevice() { if (lighting) { lightZone = ""; var d = lightDev(); lightBright = d ? d.brightness : 100 } }
-    function applyLightColor(sw) {     // sw = [name, r, g, b]
-        var eff = sw[0] === "Off" ? "none" : "static"
-        var r = backend.setLightEffect(curDev, eff, sw[1], sw[2], sw[3], lightZone)
-        if (r.ok && lightZone === "") recordLight(curDev, eff, sw[1], sw[2], sw[3])
-        showToast(r.ok ? (lightLabel() + " → " + sw[0]) : (r.error || "lighting failed"))
-    }
-    function applyLightEffect(eff) {
-        var s = lightState[curDev] || { r: 68, g: 214, b: 44 }    // reuse the chosen colour
-        var r = backend.setLightEffect(curDev, eff, s.r, s.g, s.b, lightZone)
-        if (r.ok && lightZone === "") recordLight(curDev, eff, s.r, s.g, s.b)
-        showToast(r.ok ? (lightLabel() + " → " + effectLabel(eff)) : (r.error || "lighting failed"))
-    }
     function setLightBright(pct) { var r = backend.setLightBrightness(curDev, Math.round(pct)); if (!r.ok) showToast(r.error || "brightness failed") }
     function pickLightWheel(mx, my) { var dx = mx - 75, dy = my - 75; lcS = Math.max(0, Math.min(1, Math.sqrt(dx * dx + dy * dy) / 72)); lcH = (Math.atan2(dy, dx) / (2 * Math.PI) + 1) % 1 }
     function hex2(c) { var h = Math.round(c * 255).toString(16); return h.length < 2 ? "0" + h : h }
@@ -128,7 +132,8 @@ Rectangle {
             { id: "naga", name: "Razer Naga Pro", brightness: 100, effects: ["static", "spectrum", "breath_single", "wave", "none"],
               zones: [{ name: "logo", label: "Logo", effects: ["static", "spectrum", "breath_single", "none"] },
                       { name: "scroll_wheel", label: "Scroll wheel", effects: ["static", "spectrum", "reactive", "none"] }] } ] }
-        switchDevice("naga"); lighting = true; lightBright = 100; lcWheel = true; lightSync = false
+        lightState = { "naga|": { effect: "breath_single", r: 40, g: 120, b: 255, direction: "left", react_ms: 1000 } }
+        switchDevice("naga"); lighting = true; lcWheel = true; lightSync = false
     }
     property string dirtyText: "All changes saved"
     property var applyResult: null          // last Apply-to-hardware report
@@ -518,6 +523,22 @@ Rectangle {
         color: root.panel2; border.width: 1; border.color: chipMa.containsMouse ? root.greenDim : root.lineC
         Text { id: ctxt; anchors.centerIn: parent; text: chip.label; color: chipMa.containsMouse ? root.txt : root.muted; font.pixelSize: 12; font.bold: true }
         MouseArea { id: chipMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: chip.picked() }
+    }
+
+    // a selectable pill — the shared shape for the lighting EFFECT / SPEED / DIRECTION choices.
+    // hero=true is the larger, accent-bordered EFFECT pill; the rest are the compact parameter pills.
+    component SelPill: Rectangle {
+        id: pill
+        property string label: ""
+        property bool selected: false
+        property bool hero: false
+        signal picked()
+        implicitWidth: pillTxt.implicitWidth + (hero ? 22 : 20); implicitHeight: hero ? 30 : 28; radius: 7
+        color: selected ? root.greenDim : root.panel2
+        border.width: 1; border.color: selected ? (hero ? root.greenHot : root.green) : root.lineC
+        Text { id: pillTxt; anchors.centerIn: parent; text: pill.label; font.bold: true
+            font.pixelSize: hero ? 12 : 11; color: pill.selected ? root.greenTxt : root.muted }
+        MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: pill.picked() }
     }
 
     component Hotspot: Item {
@@ -1035,14 +1056,34 @@ Rectangle {
                     Column {
                         visible: root.lightDev() !== null
                         width: parent.width; spacing: 13
-                        // sync across devices (OpenRazer global setting) — surfaced, not forced
-                        FlatSwitch {
-                            label: "Sync all devices"; on: root.lightSync
-                            onToggled: { var r = backend.setLightingSync(!root.lightSync)
-                                if (r.ok) root.lightSync = !root.lightSync; else root.showToast(r.error || "sync failed") }
+                        // current state — what's applied to this device/zone right now
+                        Rectangle {
+                            width: parent.width; height: nowCol.implicitHeight + 18; radius: 9
+                            color: root.panel2; border.width: 1; border.color: root.lineC
+                            Column {
+                                id: nowCol
+                                anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 11 }
+                                spacing: 3
+                                Text { text: "NOW"; color: root.muted2; font.pixelSize: 9; font.letterSpacing: 1.6 }
+                                Row {
+                                    spacing: 8
+                                    Rectangle {
+                                        visible: root.lightUsesColour()
+                                        width: 14; height: 14; radius: 4; anchors.verticalCenter: parent.verticalCenter
+                                        color: Qt.rgba(root.curLight().r / 255, root.curLight().g / 255, root.curLight().b / 255, 1)
+                                        border.width: 1; border.color: root.line2
+                                    }
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 13; font.bold: true; color: root.txt
+                                        text: root.curLight().effect === "" ? "No look set this session — pick an effect"
+                                            : (root.effectLabel(root.curLight().effect)
+                                               + (root.lightUsesDirection() ? " · " + (root.curLight().direction === "left" ? "← Left" : "Right →") : "")
+                                               + (root.lightUsesSpeed() ? " · " + root.speedLabel(root.curLight().react_ms) : "")
+                                               + " · " + Math.round(root.lightBright) + "% bright")
+                                    }
+                                }
+                            }
                         }
-                        Text { width: parent.width; wrapMode: Text.WordWrap; color: root.muted2; font.pixelSize: 10
-                            text: root.lightSync ? "One look mirrors to every Razer device." : "Each device is controlled on its own." }
                         // zones (only when the device exposes them; Tartarus shows none)
                         Flow {
                             visible: root.lightDev() && (root.lightDev().zones || []).length > 0
@@ -1074,22 +1115,39 @@ Rectangle {
                                 onReleased: root.setLightBright(root.lightBright)
                             }
                         }
-                        Text { text: "COLOUR"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
+                        // EFFECT — pick the look first (the primary choice), set off by its own rule
+                        Rectangle { width: parent.width; height: 1; color: root.lineC }
+                        Text { text: "EFFECT"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
                         Flow {
-                            width: parent.width; spacing: 8
+                            width: parent.width; spacing: 6
+                            Repeater {
+                                model: root.uniqueEffects(root.curZoneEffects())
+                                // compare by label so the single "Pulse" pill stays selected whichever breath_* the device advertised
+                                SelPill { hero: true; label: root.effectLabel(modelData)
+                                    selected: root.effectLabel(root.curLight().effect) === root.effectLabel(modelData)
+                                    onPicked: root.applyLighting({ effect: modelData }) }
+                            }
+                        }
+                        // contextual controls — only what the chosen effect actually uses
+                        Rectangle { visible: root.lightUsesColour() || root.lightUsesSpeed() || root.lightUsesDirection()
+                            width: parent.width; height: 1; color: root.lineC }
+                        Text { visible: root.lightUsesColour(); text: "COLOUR"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
+                        Flow {
+                            visible: root.lightUsesColour(); width: parent.width; spacing: 8
                             Repeater {
                                 model: root.lightSwatches
                                 Rectangle {
+                                    property bool sel: root.curLight().r === modelData[1] && root.curLight().g === modelData[2] && root.curLight().b === modelData[3]
                                     width: 30; height: 30; radius: 7
-                                    color: modelData[0] === "Off" ? root.bg0 : Qt.rgba(modelData[1] / 255, modelData[2] / 255, modelData[3] / 255, 1)
-                                    border.width: 1; border.color: lsw.containsMouse ? root.txt : root.line2
-                                    Text { visible: modelData[0] === "Off"; anchors.centerIn: parent; text: "∅"; color: root.muted; font.pixelSize: 13 }
+                                    color: Qt.rgba(modelData[1] / 255, modelData[2] / 255, modelData[3] / 255, 1)
+                                    border.width: sel ? 3 : 1; border.color: sel ? root.greenHot : (lsw.containsMouse ? root.txt : root.line2)
                                     MouseArea { id: lsw; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                        onClicked: root.applyLightColor(modelData) }
+                                        onClicked: root.applyLighting({ r: modelData[1], g: modelData[2], b: modelData[3] }) }
                                 }
                             }
                         }
                         Rectangle {   // custom-colour disclosure
+                            visible: root.lightUsesColour()
                             width: lcpT.implicitWidth + 26; height: 24; radius: 6
                             color: root.lcWheel ? root.greenDim : root.panel2
                             border.width: 1; border.color: root.lcWheel ? root.green : root.lineC
@@ -1098,7 +1156,7 @@ Rectangle {
                             MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.lcWheel = !root.lcWheel }
                         }
                         Column {
-                            visible: root.lcWheel; width: parent.width; spacing: 8
+                            visible: root.lightUsesColour() && root.lcWheel; width: parent.width; spacing: 8
                             Item {
                                 width: 150; height: 150
                                 Canvas {
@@ -1122,7 +1180,8 @@ Rectangle {
                                     y: 75 + Math.sin(root.lcH * 2 * Math.PI) * root.lcS * 72 - 6 }
                                 MouseArea { anchors.fill: parent; cursorShape: Qt.CrossCursor; preventStealing: true
                                     onPressed: function (m) { root.pickLightWheel(m.x, m.y) }
-                                    onPositionChanged: function (m) { if (pressed) root.pickLightWheel(m.x, m.y) } }
+                                    onPositionChanged: function (m) { if (pressed) root.pickLightWheel(m.x, m.y) }
+                                    onReleased: root.applyLighting({ r: Math.round(root.lcColor.r * 255), g: Math.round(root.lcColor.g * 255), b: Math.round(root.lcColor.b * 255) }) }
                             }
                             Rectangle { width: parent.width; height: 30; radius: 7; color: root.lcColor; border.width: 1; border.color: root.line2
                                 Text { anchors.centerIn: parent; text: "#" + root.hex2(root.lcColor.r) + root.hex2(root.lcColor.g) + root.hex2(root.lcColor.b)
@@ -1135,21 +1194,41 @@ Rectangle {
                                 Rectangle { width: 4; height: parent.height + 6; radius: 2; color: "white"; y: -3; x: root.lcV * (parent.width - 4) }
                                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; preventStealing: true
                                     onPressed: function (m) { root.lcV = Math.max(0, Math.min(1, m.x / width)) }
-                                    onPositionChanged: function (m) { if (pressed) root.lcV = Math.max(0, Math.min(1, m.x / width)) } }
+                                    onPositionChanged: function (m) { if (pressed) root.lcV = Math.max(0, Math.min(1, m.x / width)) }
+                                    onReleased: root.applyLighting({ r: Math.round(root.lcColor.r * 255), g: Math.round(root.lcColor.g * 255), b: Math.round(root.lcColor.b * 255) }) }
                             }
-                            Rectangle { width: parent.width; height: 30; radius: 8; color: root.greenDim; border.width: 1; border.color: root.green
-                                Text { anchors.centerIn: parent; text: "Apply colour"; color: root.greenTxt; font.pixelSize: 12; font.bold: true }
-                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.applyLightColor(["Custom", Math.round(root.lcColor.r * 255), Math.round(root.lcColor.g * 255), Math.round(root.lcColor.b * 255)]) } }
+                            Text { width: parent.width; wrapMode: Text.WordWrap; color: root.muted2; font.pixelSize: 10
+                                text: "Drag to preview · release to apply" }
                         }
-                        Text { text: "STYLE"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
-                        Flow {
-                            width: parent.width; spacing: 6
+                        // SPEED — React only
+                        Text { visible: root.lightUsesSpeed(); text: "SPEED"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
+                        Row {
+                            visible: root.lightUsesSpeed(); spacing: 6
                             Repeater {
-                                model: root.uniqueEffects(root.curZoneEffects())
-                                Chip { label: root.effectLabel(modelData); onPicked: root.applyLightEffect(modelData) }
+                                model: [{ ms: 1500, t: "Slow" }, { ms: 1000, t: "Medium" }, { ms: 500, t: "Fast" }]
+                                SelPill { label: modelData.t; selected: root.curLight().react_ms === modelData.ms
+                                    onPicked: root.applyLighting({ react_ms: modelData.ms }) }
                             }
                         }
+                        // DIRECTION — Wave only
+                        Text { visible: root.lightUsesDirection(); text: "DIRECTION"; color: root.muted2; font.pixelSize: 10; font.letterSpacing: 1.6 }
+                        Row {
+                            visible: root.lightUsesDirection(); spacing: 6
+                            Repeater {
+                                model: [{ d: "left", t: "←  Left" }, { d: "right", t: "Right  →" }]
+                                SelPill { label: modelData.t; selected: root.curLight().direction === modelData.d
+                                    onPicked: root.applyLighting({ direction: modelData.d }) }
+                            }
+                        }
+                        // sync across devices (a global OpenRazer setting) — kept at the bottom
+                        Rectangle { width: parent.width; height: 1; color: root.lineC }
+                        FlatSwitch {
+                            label: "Sync all devices"; on: root.lightSync
+                            onToggled: { var r = backend.setLightingSync(!root.lightSync)
+                                if (r.ok) root.lightSync = !root.lightSync; else root.showToast(r.error || "sync failed") }
+                        }
+                        Text { width: parent.width; wrapMode: Text.WordWrap; color: root.muted2; font.pixelSize: 10
+                            text: root.lightSync ? "One look mirrors to every Razer device." : "Each device is controlled on its own." }
                     }
                 }
             }

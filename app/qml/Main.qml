@@ -265,7 +265,7 @@ Rectangle {
         root.calBindable = backend.bindableIds(root.curDev)
         root.calibrating = true
         refreshCaptured()
-        armNextUncaptured()
+        if (!backend.demo) armNextUncaptured()   // demo: click a key to calibrate it (no auto-advance)
         return true
     }
     function exitCalibrate() {
@@ -357,9 +357,16 @@ Rectangle {
         target: backend
         function onKeyCaptured(dev, hotspot, label) {
             if (!root.calibrating || dev !== root.curDev) return
-            root.refreshCaptured()
+            if (backend.demo) {   // simulated capture — track in memory (no disk), no auto-advance
+                if (root.capturedIds.indexOf(hotspot) < 0) {
+                    var c = root.capturedIds.slice(); c.push(hotspot); root.capturedIds = c
+                }
+                root.armedKey = ""
+            } else {
+                root.refreshCaptured()
+                root.armNextUncaptured()
+            }
             root.showToast("Got it — " + hotspot.replace(/_/g, " ") + (label ? "  (" + label + ")" : ""))
-            root.armNextUncaptured()
         }
         function onCalibrationError(msg) { root.showToast("Calibrate — " + msg) }
     }
@@ -622,6 +629,17 @@ Rectangle {
                 Text { textFormat: Text.RichText; text: "KEY<font color='#44d62c'>ZER</font>"; color: root.txt; font.pixelSize: 16; font.bold: true; font.letterSpacing: 2 }
                 Text { text: "VISUAL REMAPPING · LINUX"; color: root.muted2; font.pixelSize: 9; font.letterSpacing: 0.5 }
             }
+            Rectangle {   // demo-mode badge — quiet + honest about what's simulated
+                visible: backend.demo
+                anchors.verticalCenter: parent.verticalCenter
+                width: demoRow.implicitWidth + 16; height: 22; radius: 6
+                color: root.panel2; border.width: 1; border.color: root.alpha(root.cyan, 0.55)
+                Row {
+                    id: demoRow; anchors.centerIn: parent; spacing: 6
+                    Text { text: "DEMO"; color: root.cyan; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.5; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "no hardware · simulated"; color: root.muted2; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                }
+            }
         }
 
         Row {
@@ -745,7 +763,7 @@ Rectangle {
     Item {
         id: hintBar
         anchors { top: header.bottom; left: parent.left; right: parent.right }
-        height: (root.capSource === "default" && !root.hintDismissed && !root.calibrating) ? 34 : 0
+        height: (root.capSource === "default" && !root.hintDismissed && !root.calibrating && !backend.demo) ? 34 : 0
         visible: height > 0; clip: true
         Rectangle {
             anchors.fill: parent; color: root.alpha(root.amber, 0.13)

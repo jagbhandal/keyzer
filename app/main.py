@@ -23,7 +23,20 @@ APP_DIR = Path(__file__).resolve().parent
 ICON = APP_DIR.parent / "packaging" / "keyzer.svg"
 
 
+def _env_int(name: str, default: int) -> int:
+    """An int from the environment, falling back to default on a bad/absent value."""
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
 def main() -> int:
+    # Demo mode: `--demo` (or KEYZER_DEMO=1) runs the app fully populated with no
+    # Razer hardware — for trying KEYZER out and for the screenshot factory.
+    if "--demo" in sys.argv:
+        os.environ["KEYZER_DEMO"] = "1"
+
     app = QGuiApplication(sys.argv)
     app.setApplicationName("KEYZER")
     app.setOrganizationName("KEYZER")
@@ -44,7 +57,8 @@ def main() -> int:
     view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
     view.setColor("#0b0b0e")
     view.setTitle("KEYZER")
-    view.resize(1200, 760)
+    # Render size (the screenshot factory bumps this for crisp marketing shots).
+    view.resize(_env_int("KEYZER_W", 1200), _env_int("KEYZER_H", 760))
     view.setSource(QUrl.fromLocalFile(str(APP_DIR / "qml" / "Main.qml")))
     if view.status() == QQuickView.Status.Error:
         for err in view.errors():

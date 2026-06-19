@@ -15,13 +15,25 @@ import shutil
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QThread, Signal, Slot
+from PySide6.QtCore import Property, QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 import engine
 import lighting
 
 REPO = Path(__file__).resolve().parent.parent
+
+# Sample lighting shown in demo mode (no OpenRazer) — the panel's expected shape.
+_DEMO_LIGHTING = {"error": None, "devices": [
+    {"id": "tartarus", "name": "Razer Tartarus Pro", "brightness": 80,
+     "effects": ["static", "reactive", "none"], "zones": [], "error": None},
+    {"id": "naga", "name": "Razer Naga Pro", "brightness": 100,
+     "effects": ["static", "spectrum", "breath_single", "wave", "none"],
+     "zones": [{"name": "logo", "label": "Logo",
+                "effects": ["static", "spectrum", "breath_single", "none"]},
+               {"name": "scroll_wheel", "label": "Scroll wheel",
+                "effects": ["static", "spectrum", "reactive", "none"]}],
+     "error": None}]}
 
 
 class _CaptureWorker(QThread):
@@ -194,8 +206,10 @@ class Backend(QObject):
                                    for k in v["keys"] if k.get("unavailable")}
                              for dev, lay in self._layouts.items()}
         self._deps = _detect_deps()
+        self._demo = bool(os.environ.get("KEYZER_DEMO"))   # run fully populated, no hardware
         self._live = {}     # dev -> profile currently injected (KEYZER-tracked; daemon can't report it)
         self._cal_worker = None   # active _CaptureWorker during in-app calibration, else None
+        self._demo_cal = False    # a simulated (no-hardware) calibration session
         self._cal_dev = ""
         self._load_profiles()
 
@@ -219,6 +233,8 @@ class Backend(QObject):
             self._active = next(iter(self._profiles))
 
     def _save(self) -> None:
+        if self._demo:
+            return   # demo mode is throwaway — never persist profiles/settings to disk
         engine.save_json(engine.PROFILES,
                          {"version": 1, "active": self._active,
                           "live": self._live, "settings": self._settings,
@@ -241,7 +257,13 @@ class Backend(QObject):
 
     @Property("QVariant", constant=True)
     def deps(self) -> dict:
-        return self._deps
+        # Demo mode reports everything present so the whole UI is enabled and nothing
+        # is greyed out / hinting at missing hardware.
+        return {"inputRemapper": True, "openrazer": True} if self._demo else self._deps
+
+    @Property(bool, constant=True)
+    def demo(self) -> bool:
+        return self._demo
 
     @Slot(result="QVariant")
     def deviceIds(self) -> list[str]:
@@ -408,7 +430,7 @@ class Backend(QObject):
     # ----- in-app calibration (live evdev capture) -----
     @Slot(result=bool)
     def calibrating(self) -> bool:
-        return self._cal_worker is not None
+        return self._cal_worker is not None or self._demo_cal
 
     @Slot(str, result="QVariant")
     def beginCalibration(self, dev: str) -> dict:
@@ -417,6 +439,11 @@ class Backend(QObject):
         UI does this). Returns {ok, device} or {ok:False, error} for the fallback."""
         if dev not in self._layouts:
             return {"ok": False, "error": "Unknown device"}
+        if self._demo:   # no hardware — captures are simulated (see armCalibration)
+            self._cal_dev = dev
+            self._demo_cal = True
+            self.calibrationChanged.emit()
+            return {"ok": True, "device": self._layouts[dev].get("name", dev)}
         if self._cal_worker is not None:
             return {"ok": False, "error": "Already calibrating"}
         try:
@@ -457,8 +484,15 @@ class Backend(QObject):
     @Slot(str)
     def armCalibration(self, hotspot: str) -> None:
         """Wait for the next physical press and bind it to ``hotspot``."""
+        if self._demo:   # simulate a press landing shortly after arming
+            QTimer.singleShot(350, lambda: self._demo_capture(hotspot))
+            return
         if self._cal_worker is not None:
             self._cal_worker.arm(hotspot)
+
+    def _demo_capture(self, hotspot: str) -> None:
+        if self._demo_cal and self._cal_dev:
+            self.keyCaptured.emit(self._cal_dev, hotspot, "demo")
 
     @Slot()
     def disarmCalibration(self) -> None:
@@ -472,6 +506,7 @@ class Backend(QObject):
         case where wait() times out can't GC a still-running QThread (no crash)."""
         worker = self._cal_worker
         self._cal_dev = ""
+        self._demo_cal = False
         if worker is not None:
             worker.stop()
             worker.wait(3000)   # the read loop polls _stop every 0.2s, so this returns fast
@@ -531,6 +566,8 @@ class Backend(QObject):
                      if h in self._hotspot_ids.get(d, set())
                      and h not in self._unavailable.get(d, set())}
                  for d, b in src.items()}
+        if self._demo:
+            return self._demo_apply(profile, binds)
         # Apply always persists: the preset is injected now AND registered with
         # input-remapper's autoload so it survives a reboot/replug. Stop is the
         # only "turn it off" — there is no reset-on-restart mode.
@@ -555,6 +592,23 @@ class Backend(QObject):
         msg = f"{total} bindings live." if all_ok else "Applied with issues — see below."
         return {"ok": all_ok, "message": msg, "devices": devices}
 
+    def _demo_apply(self, profile: str, binds: dict) -> dict:
+        """Simulated apply for demo mode — updates the live set and returns the same
+        report shape as applyToHardware, with no input-remapper involved."""
+        devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
+                    "ok": True, "count": len(b), "warnings": [], "error": None}
+                   for d, b in binds.items()]
+        if not devices:
+            return {"ok": False, "message": "Nothing to apply for this profile.", "devices": []}
+        for x in devices:
+            if x["count"]:
+                self._live[x["dev"]] = profile
+            else:
+                self._live.pop(x["dev"], None)
+        self.liveChanged.emit()
+        total = sum(x["count"] for x in devices)
+        return {"ok": True, "message": f"{total} bindings live (demo).", "devices": devices}
+
     @Property("QVariant", notify=liveChanged)
     def liveStatus(self) -> dict:
         return dict(self._live)
@@ -563,6 +617,10 @@ class Backend(QObject):
     def stopAll(self) -> dict:
         """Stop injecting on all devices (back to defaults) and drop KEYZER's
         autoload entries, so the mappings don't reload at the next login/replug."""
+        if self._demo:
+            self._live = {}
+            self.liveChanged.emit()
+            return {"ok": True, "error": None}
         if not engine.available():
             return {"ok": False, "error": "input-remapper not installed"}
         ok = engine.stop_all()
@@ -576,6 +634,8 @@ class Backend(QObject):
     @Slot(result="QVariant")
     def lightingDevices(self) -> dict:
         """Connected, lightable devices (or an error) for the lighting panel."""
+        if self._demo:
+            return _DEMO_LIGHTING
         d = lighting.devices()
         if "_error" in d:
             return {"error": d["_error"], "devices": []}
@@ -587,19 +647,25 @@ class Backend(QObject):
 
     @Slot(str, str, int, int, int, str, result="QVariant")
     def setLightEffect(self, dev: str, effect: str, r: int, g: int, b: int, zone: str) -> dict:
+        if self._demo:
+            return {"ok": True}
         return lighting.set_effect(dev, effect, (r, g, b), zone=zone)
 
     @Slot(str, int, result="QVariant")
     def setLightBrightness(self, dev: str, pct: int) -> dict:
+        if self._demo:
+            return {"ok": True}
         return lighting.set_brightness(dev, pct)
 
     @Slot(result=bool)
     def lightingSync(self) -> bool:
         """Whether OpenRazer is mirroring effects across all Chroma devices."""
-        return lighting.sync_enabled()
+        return False if self._demo else lighting.sync_enabled()
 
     @Slot(bool, result="QVariant")
     def setLightingSync(self, enabled: bool) -> dict:
+        if self._demo:
+            return {"ok": True}
         return lighting.set_sync(enabled)
 
     # ----- align / copy-layout -----

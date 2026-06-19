@@ -536,5 +536,85 @@ class CalibrationTests(_IsolatedBackendTest):
         self.assertFalse(self.b.calibrating())
 
 
+class DemoModeTests(_IsolatedBackendTest):
+    """Demo mode (KEYZER_DEMO=1) runs fully populated with no hardware: deps report
+    present, apply/stop/lighting/calibrate are simulated and never touch the engine
+    or OpenRazer. (We flip _demo on the instance to avoid env coupling.)"""
+
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+        self.b._demo = True
+
+    def test_deps_all_true(self):
+        self.assertEqual(self.b.deps, {"inputRemapper": True, "openrazer": True})
+        self.assertTrue(self.b.demo)
+
+    def test_apply_is_simulated(self):
+        # The demo path must never reach the engine — make engine.apply_profile blow
+        # up so the test fails if it's called.
+        def boom(*a, **k):
+            raise AssertionError("engine touched in demo mode")
+        saved = engine.apply_profile
+        engine.apply_profile = boom
+        try:
+            r = self.b.applyToHardware("Gaming", "")
+        finally:
+            engine.apply_profile = saved
+        self.assertTrue(r["ok"])
+        self.assertIn("demo", r["message"].lower())
+        self.assertTrue(all(d["ok"] for d in r["devices"]))
+        self.assertEqual({d["dev"] for d in r["devices"]}, {"tartarus", "naga"})
+        self.assertTrue(self.b.liveStatus)        # live set populated
+
+    def test_apply_unknown_profile_is_empty(self):
+        r = self.b.applyToHardware("Ghost", "")
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["devices"], [])
+
+    def test_stop_all_clears_live(self):
+        self.b._live = {"tartarus": "Gaming"}
+        r = self.b.stopAll()
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.b.liveStatus, {})
+
+    def test_lighting_devices_are_sampled(self):
+        d = self.b.lightingDevices()
+        self.assertIsNone(d["error"])
+        self.assertEqual({x["id"] for x in d["devices"]}, {"tartarus", "naga"})
+
+    def test_light_setters_succeed(self):
+        self.assertTrue(self.b.setLightEffect("naga", "static", 1, 2, 3, "")["ok"])
+        self.assertTrue(self.b.setLightBrightness("naga", 50)["ok"])
+        self.assertTrue(self.b.setLightingSync(True)["ok"])
+
+    def test_demo_persists_nothing_to_disk(self):
+        # A demo built in demo from the start must never write profiles.json — not on
+        # first-run seed, not on edits the demo user makes while clicking around.
+        import os as _os
+        if engine.PROFILES.exists():
+            engine.PROFILES.unlink()   # drop the file setUp's non-demo backend wrote
+        saved = _os.environ.get("KEYZER_DEMO")
+        _os.environ["KEYZER_DEMO"] = "1"
+        try:
+            demo = backend.Backend()
+            demo.setBinding("Gaming", "tartarus", "TAR_01", "Esc")
+            demo.setActiveProfile("Work")
+        finally:
+            if saved is None:
+                _os.environ.pop("KEYZER_DEMO", None)
+            else:
+                _os.environ["KEYZER_DEMO"] = saved
+        self.assertFalse(engine.PROFILES.exists())   # demo wrote nothing
+
+    def test_calibration_is_simulated(self):
+        r = self.b.beginCalibration("tartarus")
+        self.assertTrue(r["ok"])
+        self.assertTrue(self.b.calibrating())     # demo session active, no worker
+        self.assertIsNone(self.b._cal_worker)
+        self.assertEqual(self.b.endCalibration(), {"ok": True})
+        self.assertFalse(self.b.calibrating())
+
+
 if __name__ == "__main__":
     unittest.main()

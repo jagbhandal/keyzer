@@ -203,10 +203,14 @@ Rectangle {
         var r = backend.applyToHardware(curProfile, curDev)
         showToast(r.ok ? "Cleared · live" : "Cleared")
     }
-    function applyToHardware() {
-        if (!backend.deps.inputRemapper) { showToast("input-remapper not found"); return }
-        showToast("Applying " + curProfile + " to your hardware…")
-        applyTimer.restart()   // defer so the toast paints before the (blocking) call
+    function applyActiveProfile() {   // the active profile is always what's live — push it
+        if (!backend.deps.inputRemapper) { showToast("Switched to " + curProfile); return }
+        applyTimer.restart()   // defer so the profile change paints before the (blocking) call
+    }
+    function hasApplyIssue(r) {   // a genuine problem worth the detail overlay, not just "empty"
+        return (r.devices || []).some(function (d) {
+            return (d.error && d.error !== "no applicable binds") || (d.warnings && d.warnings.length > 0)
+        })
     }
     function syncProfile() { curProfile = backend.activeProfile }
     function exportProfile() {
@@ -279,8 +283,12 @@ Rectangle {
     Timer {
         id: applyTimer; interval: 60
         onTriggered: {
-            root.applyResult = backend.applyToHardware(root.curProfile, "")
-            resultOverlay.visible = true
+            var r = backend.applyToHardware(root.curProfile, "")
+            if (r.ok) { root.showToast(root.curProfile + " — " + r.message); return }
+            if (root.hasApplyIssue(r)) { root.applyResult = r; resultOverlay.visible = true; return }
+            // benign (empty profile) or daemon unreachable — a toast is enough, no overlay
+            root.showToast((r.devices && r.devices.length) ? ("Switched to " + root.curProfile)
+                                                           : (root.curProfile + " — " + r.message))
         }
     }
     Timer { running: root.lighting; interval: 220; repeat: true; onTriggered: root.litStep++ }
@@ -516,7 +524,7 @@ Rectangle {
                             model: backend.profileList
                             MenuItem {
                                 text: (modelData === root.curProfile ? "●  " : "      ") + modelData
-                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile() }
+                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile(); root.applyActiveProfile() }
                             }
                         }
                         MenuSeparator {}
@@ -531,25 +539,6 @@ Rectangle {
                             onTriggered: nameDialog.open("delete", "Delete profile", "") }
                     }
                 }
-            }
-            Rectangle {
-                id: applyBtn; anchors.verticalCenter: parent.verticalCenter
-                width: applyRow.implicitWidth + 28; height: 34; radius: 9
-                border.width: 1; border.color: applyMa.containsMouse ? "#74f562" : root.green
-                gradient: Gradient {
-                    GradientStop { position: 0.0; color: applyMa.containsMouse ? "#5fe245" : root.green }
-                    GradientStop { position: 1.0; color: applyMa.containsMouse ? root.green : root.greenDim }
-                }
-                Rectangle {   // breathing halo — marks the one primary action, "powered"
-                    anchors.fill: parent; anchors.margins: -7; radius: 15; z: -1
-                    color: root.alpha(root.green, applyMa.containsMouse ? 0.34 : (0.13 + 0.10 * root.pulse))
-                }
-                Row {
-                    id: applyRow; anchors.centerIn: parent; spacing: 6
-                    Text { text: "⚡"; color: root.greenTxt; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
-                    Text { text: "Apply to device"; color: root.greenTxt; font.pixelSize: 12; font.bold: true; font.letterSpacing: 0.3; anchors.verticalCenter: parent.verticalCenter }
-                }
-                MouseArea { id: applyMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.applyToHardware() }
             }
             Rectangle {
                 id: livePill; anchors.verticalCenter: parent.verticalCenter
@@ -1172,7 +1161,7 @@ Rectangle {
             else r = { ok: false, error: "?" }
             if (r.ok) {
                 root.syncProfile(); visible = false
-                showToast(mode === "delete" ? "Profile deleted" : ("Saved “" + (r.name || "") + "”"))
+                root.applyActiveProfile()   // the new active profile becomes live immediately
             } else { error = r.error }
         }
         Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.55)

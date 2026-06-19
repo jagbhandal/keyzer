@@ -118,7 +118,8 @@ class Backend(QObject):
             self._profiles = saved["profiles"]
             self._active = saved.get("active")
             if isinstance(saved.get("live"), dict):
-                self._live = saved["live"]   # presets persist in the daemon across restarts
+                self._live = saved["live"]   # KEYZER's last-known live set (UI state only);
+                                             # real persistence is engine autoload, below
             if isinstance(saved.get("settings"), dict):
                 self._settings = saved["settings"]
         else:
@@ -321,14 +322,24 @@ class Backend(QObject):
         or just ``dev``. Returns a UI-shaped report (overall + per device)."""
         # only push bindable hotspots that exist (drops orphans + unavailable
         # controls; thumb-pad diagonals are handled via combos).
-        src = self._profiles.get(profile, {})
-        if dev:
-            src = {dev: src.get(dev, {})}
+        prof = self._profiles.get(profile)
+        if prof is None:
+            src = {}                            # unknown profile -> nothing to apply
+        elif dev:
+            src = {dev: prof.get(dev, {})}      # one device (a single bind edit)
+        else:
+            # a full apply covers EVERY known device, so switching to a profile that
+            # leaves a device unbound reverts it rather than leaving the old one live.
+            src = {d: prof.get(d, {}) for d in self._layouts}
         binds = {d: {h: v for h, v in (b or {}).items()
                      if h in self._hotspot_ids.get(d, set())
                      and h not in self._unavailable.get(d, set())}
                  for d, b in src.items()}
-        report = engine.apply_profile(profile, binds, engine.load_captures(), combos=self._combos)
+        # Apply always persists: the preset is injected now AND registered with
+        # input-remapper's autoload so it survives a reboot/replug. Stop is the
+        # only "turn it off" — there is no reset-on-restart mode.
+        report = engine.apply_profile(profile, binds, engine.load_captures(),
+                                      autoload=True, combos=self._combos)
         if "_error" in report:
             return {"ok": False, "message": report["_error"], "devices": []}
         devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
@@ -337,7 +348,11 @@ class Backend(QObject):
                    for d, r in report.items()]
         if not devices:
             return {"ok": False, "message": "Nothing to apply for this profile.", "devices": []}
-        self._live.update({d["dev"]: profile for d in devices if d["ok"]})
+        for d in devices:                       # keep _live in sync with reality:
+            if d["ok"]:
+                self._live[d["dev"]] = profile  # injected
+            else:
+                self._live.pop(d["dev"], None)  # reverted / not captured -> not live
         self.liveChanged.emit()
         total = sum(d["count"] for d in devices)
         all_ok = all(d["ok"] for d in devices)
@@ -350,12 +365,14 @@ class Backend(QObject):
 
     @Slot(result="QVariant")
     def stopAll(self) -> dict:
-        """Tell the daemon to stop injecting on all devices (back to defaults)."""
+        """Stop injecting on all devices (back to defaults) and drop KEYZER's
+        autoload entries, so the mappings don't reload at the next login/replug."""
         if not engine.available():
             return {"ok": False, "error": "input-remapper not installed"}
         ok = engine.stop_all()
         if ok:
             self._live = {}
+            engine.clear_autoload()
             self.liveChanged.emit()
         return {"ok": ok, "error": None if ok else "couldn't reach the service"}
 

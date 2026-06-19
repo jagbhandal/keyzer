@@ -346,14 +346,21 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
         # 'Nothing to apply' branch. Force the daemon-reachable + layout-synced
         # path so this exercises the device loop deterministically on any box
         # (no real daemon or xmodmap required).
-        saved_ready, saved_sync = engine.service_ready, engine.sync_keyboard_layout
+        # Each captured device produces no mappings, so apply reverts it (stop +
+        # clear_autoload); stub those engine externals so no daemon/real config is hit.
+        saved = (engine.service_ready, engine.sync_keyboard_layout,
+                 engine.device_keys, engine.stop, engine.clear_autoload)
         engine.service_ready = lambda: True
         engine.sync_keyboard_layout = lambda: {"ok": True, "count": 1,
                                                "path": "/tmp/xmodmap.json", "error": None}
+        engine.device_keys = lambda: []
+        engine.stop = lambda key: True
+        engine.clear_autoload = lambda key=None: None
         try:
             r = self.b.applyToHardware("Default", "")
         finally:
-            engine.service_ready, engine.sync_keyboard_layout = saved_ready, saved_sync
+            (engine.service_ready, engine.sync_keyboard_layout,
+             engine.device_keys, engine.stop, engine.clear_autoload) = saved
         self.assertFalse(r["ok"])
         self.assertEqual({d["dev"] for d in r["devices"]}, {"tartarus", "naga"})
         for d in r["devices"]:
@@ -391,6 +398,88 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
         name = self.b.presetNameFor("Gaming")
         self.assertTrue(name.startswith("keyzer-"))
         self.assertEqual(name, engine.preset_name_for("Gaming"))
+
+
+class PersistenceTests(_IsolatedBackendTest):
+    """Apply unconditionally persists (input-remapper autoload) so mappings survive
+    a restart/replug; Stop is the only off-switch and drops the autoload entries.
+    Engine functions are stubbed so no daemon or real config.json is touched
+    (mirrors the existing monkeypatch style in this file)."""
+
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+
+    def test_apply_always_persists(self):
+        captured = {}
+        saved = engine.apply_profile
+
+        def spy(profile, binds, captures, *, autoload=False, combos=None):
+            captured["autoload"] = autoload
+            return {}      # empty report -> graceful "nothing to apply", no daemon
+
+        engine.apply_profile = spy
+        try:
+            self.b.applyToHardware("Gaming", "")
+        finally:
+            engine.apply_profile = saved
+        self.assertTrue(captured["autoload"])   # no toggle — Apply persists, always
+
+    def test_stop_all_clears_autoload_and_live(self):
+        calls = []
+        saved = (engine.available, engine.stop_all, engine.clear_autoload)
+        engine.available = lambda: True
+        engine.stop_all = lambda: True
+        engine.clear_autoload = lambda *a, **k: calls.append("clear")
+        try:
+            self.b._live = {"tartarus": "Gaming"}
+            r = self.b.stopAll()
+        finally:
+            engine.available, engine.stop_all, engine.clear_autoload = saved
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.b._live, {})      # back to no live devices
+        self.assertEqual(calls, ["clear"])      # and autoload dropped
+
+    def test_full_apply_covers_all_known_devices(self):
+        # A full apply (dev="") must include EVERY known device — even ones the
+        # profile leaves unbound — so they get reverted, not left on the old preset.
+        self.b.importProfile(json.dumps(
+            {"keyzer": 1, "name": "OnlyTar", "binds": {"tartarus": {"TAR_01": "Esc"}}}))
+        captured = {}
+        saved = engine.apply_profile
+        engine.apply_profile = (lambda profile, binds, caps, *, autoload=False, combos=None:
+                                captured.update(keys=set(binds)) or {})
+        try:
+            self.b.applyToHardware("OnlyTar", "")
+        finally:
+            engine.apply_profile = saved
+        self.assertEqual(captured["keys"], {"tartarus", "naga"})  # naga in scope -> revert
+
+    def test_apply_drops_reverted_device_from_live(self):
+        # naga was live under a prior profile; applying a profile where naga comes
+        # back not-ok (reverted) must remove naga from the live set.
+        self.b._live = {"naga": "Gaming"}
+        saved = engine.apply_profile
+        engine.apply_profile = (lambda *a, **k: {
+            "tartarus": {"ok": True, "count": 3},
+            "naga": {"ok": False, "error": "no applicable binds"}})
+        try:
+            self.b.applyToHardware("Gaming", "")
+        finally:
+            engine.apply_profile = saved
+        self.assertEqual(self.b.liveStatus, {"tartarus": "Gaming"})  # naga dropped
+
+    def test_unknown_profile_applies_nothing(self):
+        captured = {}
+        saved = engine.apply_profile
+        engine.apply_profile = (lambda profile, binds, caps, *, autoload=False, combos=None:
+                                captured.update(keys=set(binds)) or {})
+        try:
+            r = self.b.applyToHardware("Ghost", "")
+        finally:
+            engine.apply_profile = saved
+        self.assertEqual(captured["keys"], set())   # no devices in scope
+        self.assertEqual(r["devices"], [])
 
 
 if __name__ == "__main__":

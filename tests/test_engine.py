@@ -343,5 +343,163 @@ class CapturesOriginTests(unittest.TestCase):
             self.assertEqual(set(caps), {"naga"})  # "_meta" stripped
 
 
+class AutoloadTests(unittest.TestCase):
+    """engine.set_autoload / clear_autoload / _ir_version — input-remapper's
+    config.json ``autoload`` map (the thing that makes a profile survive a
+    reboot/replug). All writes are confined to a temp XDG dir so the real
+    daemon config is never touched, and _ir_version is mocked for determinism."""
+
+    def _cfg(self, tmp: str) -> Path:
+        return Path(tmp) / "input-remapper-2" / "config.json"
+
+    def test_set_autoload_creates_map_and_stamps_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}), \
+                 mock.patch.object(engine, "_ir_version", return_value="2.2.1"):
+                engine.set_autoload("Razer Tartarus Pro", "keyzer-gaming-abc123")
+            data = json.loads(self._cfg(tmp).read_text())
+            self.assertEqual(data["autoload"],
+                             {"Razer Tartarus Pro": "keyzer-gaming-abc123"})
+            self.assertEqual(data["version"], "2.2.1")   # stamped so the daemon
+                                                         # doesn't re-run migrations
+
+    def test_set_autoload_merges_and_never_clobbers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text(json.dumps({"version": "9.9.9",
+                                       "autoload": {"Other Device": "user-preset"},
+                                       "unrelated": True}))
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}), \
+                 mock.patch.object(engine, "_ir_version", return_value="2.2.1"):
+                engine.set_autoload("Razer Naga Pro", "keyzer-work-def456")
+            data = json.loads(cfg.read_text())
+            self.assertEqual(data["autoload"]["Other Device"], "user-preset")  # kept
+            self.assertEqual(data["autoload"]["Razer Naga Pro"], "keyzer-work-def456")
+            self.assertEqual(data["version"], "9.9.9")    # existing version untouched
+            self.assertTrue(data["unrelated"])            # unrelated keys preserved
+
+    def test_set_autoload_omits_version_when_undetectable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}), \
+                 mock.patch.object(engine, "_ir_version", return_value=None):
+                engine.set_autoload("Dev", "keyzer-x-000000")
+            data = json.loads(self._cfg(tmp).read_text())
+            self.assertNotIn("version", data)             # can't fabricate one
+            self.assertIn("Dev", data["autoload"])
+
+    def test_set_autoload_preserves_corrupt_config_as_sidecar(self):
+        # A pre-corrupt config.json must not be silently clobbered: KEYZER writes a
+        # fresh valid one but keeps the unparseable original as a .corrupt sidecar.
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text("{ this is not json ]")
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}), \
+                 mock.patch.object(engine, "_ir_version", return_value="2.2.1"):
+                engine.set_autoload("Dev", "keyzer-x-000000")
+            self.assertEqual(json.loads(cfg.read_text())["autoload"],
+                             {"Dev": "keyzer-x-000000"})
+            sidecar = cfg.with_name(cfg.name + ".corrupt")
+            self.assertTrue(sidecar.exists())
+            self.assertEqual(sidecar.read_text(), "{ this is not json ]")
+
+    def test_clear_autoload_one_device_removes_only_keyzer_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text(json.dumps({"autoload": {
+                "Razer Tartarus Pro": "keyzer-gaming-abc123",
+                "Other Device": "user-preset"}}))
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
+                engine.clear_autoload("Razer Tartarus Pro")
+            data = json.loads(cfg.read_text())
+            self.assertNotIn("Razer Tartarus Pro", data["autoload"])
+            self.assertEqual(data["autoload"]["Other Device"], "user-preset")
+
+    def test_clear_autoload_all_leaves_non_keyzer_entries(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text(json.dumps({"autoload": {
+                "Tartarus": "keyzer-gaming-abc123",
+                "Naga": "keyzer-work-def456",
+                "Keeb": "user-preset"}}))
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
+                engine.clear_autoload()
+            data = json.loads(cfg.read_text())
+            self.assertEqual(data["autoload"], {"Keeb": "user-preset"})
+
+    def test_clear_autoload_leaves_user_preset_on_named_device(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = self._cfg(tmp)
+            cfg.parent.mkdir(parents=True, exist_ok=True)
+            cfg.write_text(json.dumps({"autoload": {"Keeb": "user-preset"}}))
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
+                engine.clear_autoload("Keeb")   # not a keyzer- preset -> left alone
+            data = json.loads(cfg.read_text())
+            self.assertEqual(data["autoload"], {"Keeb": "user-preset"})
+
+    def test_clear_autoload_missing_config_is_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": tmp}):
+                engine.clear_autoload()         # no config.json exists
+                engine.clear_autoload("Whatever")
+            self.assertFalse(self._cfg(tmp).exists())   # nothing created
+
+    def test_ir_version_parses_from_stderr(self):
+        # input-remapper logs --version to stderr, alongside a Pydantic warning
+        # mentioning "Python 3.14" — the anchored match must pick 2.2.1, not 3.14.
+        import subprocess
+        fake = subprocess.CompletedProcess(
+            ["input-remapper-control", "--version"], 0, stdout="",
+            stderr=("UserWarning: ... isn't compatible with Python 3.14 ...\n"
+                    "input-remapper 2.2.1 abc123 https://github.com/sezanzeb/input-remapper\n"))
+        engine._ir_version.cache_clear()
+        with mock.patch.object(engine, "available", return_value=True), \
+             mock.patch.object(engine, "_control", return_value=fake):
+            try:
+                self.assertEqual(engine._ir_version(), "2.2.1")
+            finally:
+                engine._ir_version.cache_clear()
+
+    def test_ir_version_none_when_control_fails(self):
+        import subprocess
+        fake = subprocess.CompletedProcess(["x"], 1, stdout="", stderr="boom")
+        engine._ir_version.cache_clear()
+        with mock.patch.object(engine, "available", return_value=True), \
+             mock.patch.object(engine, "_control", return_value=fake):
+            try:
+                self.assertIsNone(engine._ir_version())
+            finally:
+                engine._ir_version.cache_clear()
+
+class ApplyRevertTests(unittest.TestCase):
+    """engine.apply_profile reverts a captured device the profile leaves unbound
+    (stop + clear_autoload) so 'active profile = live' holds. All daemon-facing
+    helpers are stubbed; no real daemon or config is touched."""
+
+    def test_unbound_captured_device_is_stopped_and_cleared(self):
+        calls = []
+        captures = {"naga": {"device_name": "Razer Naga Pro", "captured": {}}}
+        saved = (engine.available, engine.service_ready, engine.sync_keyboard_layout,
+                 engine.device_keys, engine.stop, engine.clear_autoload)
+        engine.available = lambda: True
+        engine.service_ready = lambda: True
+        engine.sync_keyboard_layout = lambda: {"ok": True, "path": "/tmp/x", "error": None}
+        engine.device_keys = lambda: ["Razer Naga Pro"]
+        engine.stop = lambda key: calls.append(("stop", key)) or True
+        engine.clear_autoload = lambda key=None: calls.append(("clear", key))
+        try:
+            report = engine.apply_profile("Gaming", {"naga": {}}, captures)
+        finally:
+            (engine.available, engine.service_ready, engine.sync_keyboard_layout,
+             engine.device_keys, engine.stop, engine.clear_autoload) = saved
+        self.assertFalse(report["naga"]["ok"])
+        self.assertEqual(report["naga"]["error"], "no applicable binds")
+        self.assertIn(("stop", "Razer Naga Pro"), calls)     # injection stopped
+        self.assertIn(("clear", "Razer Naga Pro"), calls)    # autoload dropped
+
+
 if __name__ == "__main__":
     unittest.main()

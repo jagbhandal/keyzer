@@ -26,6 +26,9 @@ from functools import lru_cache
 from pathlib import Path
 
 CONTROL = "input-remapper-control"
+# Every preset KEYZER writes is namespaced with this prefix, so autoload cleanup
+# can recognise — and only remove — KEYZER's own entries, never a user's.
+PRESET_PREFIX = "keyzer-"
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "keyzer"
 CAPTURES = CONFIG_DIR / "captures.json"
 PROFILES = CONFIG_DIR / "profiles.json"
@@ -192,7 +195,7 @@ def preset_name_for(profile: str) -> str:
     Apply never silently overwrites another profile's preset."""
     slug = re.sub(r"[^a-z0-9]+", "-", profile.lower()).strip("-") or "profile"
     digest = hashlib.sha1(profile.encode()).hexdigest()[:6]
-    return f"keyzer-{slug}-{digest}"
+    return f"{PRESET_PREFIX}{slug}-{digest}"
 
 
 def _is_pointer(cap: dict) -> bool:
@@ -315,15 +318,71 @@ def sync_keyboard_layout() -> dict:
                 "is an X/XWayland session active?)")
 
 
+@lru_cache(maxsize=1)
+def _ir_version() -> str | None:
+    """The installed input-remapper version string (e.g. '2.2.1'), for config.json's
+    ``version`` stamp — or None if it can't be read. Without a version field
+    input-remapper reads the config as 0.0.0 and needlessly re-runs *every*
+    migration on each autoload, so we stamp it when first creating the file."""
+    if not available():
+        return None
+    r = _control("--version")   # logs "input-remapper 2.2.1 <sha> <url>" — to stderr
+    if r.returncode != 0:
+        return None
+    text = f"{r.stdout}\n{r.stderr}"
+    m = re.search(r"input-remapper\s+(\d+\.\d+\.\d+)", text)   # anchored: skip the
+    if m:                                                      # warning's "3.14"
+        return m.group(1)
+    m = re.search(r"\b\d+\.\d+\.\d+\b", text)                  # fallback if reworded
+    return m.group(0) if m else None
+
+
 def set_autoload(device_key: str, preset: str) -> None:
-    """Mark a preset to auto-load at login (config.json autoload: key -> preset).
+    """Mark a preset to auto-load at login *and on reconnect* (config.json
+    ``autoload``: device key -> preset). input-remapper's login autostart and udev
+    rule consume this map — writing it is the only thing that makes a profile
+    survive a reboot or a replug; KEYZER's Apply otherwise injects runtime-only.
 
     config.json is input-remapper's own file, so write it atomically — a crash
-    mid-write must not corrupt the daemon's config, only ours."""
+    mid-write must not corrupt the daemon's config, only ours. Stamp the daemon's
+    ``version`` when creating the file (see _ir_version) without clobbering an
+    existing one."""
     cfg = _ir_config_dir() / "config.json"
-    data = load_json(cfg, {}) or {}
+    data = load_json(cfg, None)
+    if not isinstance(data, dict):
+        # Missing -> create fresh. Existing but unparseable -> preserve it as a
+        # sidecar rather than silently clobbering input-remapper's own config.
+        if cfg.exists():
+            try:
+                cfg.replace(cfg.with_name(cfg.name + ".corrupt"))
+            except OSError:
+                pass
+        data = {}
+    if not data.get("version") and (version := _ir_version()):
+        data["version"] = version
     data.setdefault("autoload", {})[device_key] = preset
     save_json(cfg, data, indent=4)
+
+
+def clear_autoload(device_key: str | None = None) -> None:
+    """Remove KEYZER's autoload entries so a stopped or no-longer-kept device won't
+    reload at the next login/reconnect. Only entries pointing at a KEYZER preset
+    (``keyzer-…``) are touched, so a user's own input-remapper autoloads are left
+    intact. ``device_key`` limits it to one device; None clears all KEYZER ones."""
+    cfg = _ir_config_dir() / "config.json"
+    data = load_json(cfg, None)
+    if not isinstance(data, dict) or not isinstance(data.get("autoload"), dict):
+        return
+    autoload = data["autoload"]
+    targets = [device_key] if device_key is not None else list(autoload)
+    removed = False
+    for key in targets:
+        value = autoload.get(key)
+        if isinstance(value, str) and value.startswith(PRESET_PREFIX):
+            del autoload[key]
+            removed = True
+    if removed:
+        save_json(cfg, data, indent=4)
 
 
 def load_captures(path: Path = CAPTURES) -> dict:
@@ -374,14 +433,19 @@ def apply_profile(profile: str, binds_by_device: dict, captures: dict,
         if not device_name:
             report[dev_id] = {"ok": False, "error": "not captured — run capture.py"}
             continue
+        key = resolve_key(device_name, keys)
         mappings, warnings = build_preset(binds, cap.get("captured") or {},
                                           (combos or {}).get(dev_id))
         if not mappings:
+            # The active profile leaves this device unbound — revert it to hardware
+            # defaults (stop injecting + drop its autoload) so "active profile = live"
+            # holds even when a device has no binds. stop is a no-op if not injected.
+            stop(key)
+            clear_autoload(key)
             report[dev_id] = {"ok": False, "error": "no applicable binds",
                               "warnings": warnings}
             continue
         path = write_preset(device_name, preset, mappings)
-        key = resolve_key(device_name, keys)
         res = _control("--command", "start", "--device", key, "--preset", preset)
         ok = res.returncode == 0
         if ok and autoload:

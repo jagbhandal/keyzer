@@ -11,10 +11,10 @@ physical key, then records the evdev event it sees — the ``(type, code)`` plus
 in ``~/.config/keyzer/captures.json``; that file is what lets KEYZER turn a
 profile (hotspot -> output) into a real input-remapper preset (input -> output).
 
-It reads evdev directly and read-only. It never writes to your devices and does
-not need input-remapper to be running. While capturing a device its events are
-grabbed exclusively (so pressing keys doesn't trigger anything) — press Ctrl-C
-to abort at any time and the grab is always released.
+It opens evdev directly and only ever reads events (and grabs the device
+exclusively); it never injects or writes events, and doesn't need input-remapper
+running. While capturing, a device's events are grabbed (so pressing keys doesn't
+trigger anything) — press Ctrl-C to abort at any time and the grab is released.
 
 Usage:
     python3 app/capture.py                 # capture every device in layouts.json
@@ -72,6 +72,34 @@ def code_name(etype: int, code: int) -> str:
     return name[0] if isinstance(name, (list, tuple)) else name
 
 
+def classify_event(ev, dev) -> dict | None:
+    """Turn one evdev event into a capture payload, or None if it isn't a
+    deliberate press (key-up, autorepeat, pointer motion, SYN/MSC). Shared by the
+    CLI prompt loop and the in-app calibrator so both classify presses identically."""
+    if ev.type in IGNORED_TYPES:
+        return None
+    is_key_down = ev.type == ecodes.EV_KEY and ev.value == 1       # a button/key press
+    is_wheel = (ev.type == ecodes.EV_REL and ev.value != 0         # a scroll/tilt notch —
+                and ev.code in _WHEEL_CODES)                       # never pointer motion
+    if not (is_key_down or is_wheel):
+        return None
+    payload = {"type": ev.type, "code": ev.code,
+               "origin_hash": device_hash(dev),
+               "node": dev.path, "name": code_name(ev.type, ev.code)}
+    if is_wheel:  # store direction so input-remapper can match the notch
+        payload["analog_threshold"] = 1 if ev.value > 0 else -1
+    return payload
+
+
+def capture_entry(payload: dict) -> dict:
+    """The persisted shape of a captured press (drops the display-only node/name).
+    Shared by the CLI and the in-app calibrator so captures.json entries match."""
+    entry = {k: payload[k] for k in ("type", "code", "origin_hash") if k in payload}
+    if "analog_threshold" in payload:
+        entry["analog_threshold"] = payload["analog_threshold"]
+    return entry
+
+
 def find_nodes(vendor: int, product: int) -> list["evdev.InputDevice"]:
     """All /dev/input nodes belonging to one USB device (matched by id)."""
     nodes = []
@@ -93,6 +121,20 @@ def preset_dir_name(nodes: list["evdev.InputDevice"]) -> str:
     return sorted((d.name for d in nodes), key=len)[0]
 
 
+def open_nodes(dev_layout: dict) -> tuple[str | None, list]:
+    """Open every evdev node for one device from its layouts.json entry. Returns
+    (preset_name, nodes), or (None, []) if the usb id is malformed or no matching
+    device is plugged in / readable. The caller owns closing the nodes."""
+    try:
+        vendor, product = (int(x, 16) for x in dev_layout.get("usb", "").split(":"))
+    except ValueError:
+        return None, []
+    nodes = find_nodes(vendor, product)
+    if not nodes:
+        return None, []
+    return preset_dir_name(nodes), nodes
+
+
 def read_press(fd_to_dev):
     """Block until a real press arrives on one of the device nodes, or the user
     types a command. Returns ("event", payload) or ("cmd", text)."""
@@ -110,19 +152,30 @@ def read_press(fd_to_dev):
             except BlockingIOError:
                 continue
             for ev in events:
-                if ev.type in IGNORED_TYPES:
-                    continue
-                is_key_down = ev.type == ecodes.EV_KEY and ev.value == 1  # a button/key press
-                is_wheel = (ev.type == ecodes.EV_REL and ev.value != 0    # a scroll/tilt notch —
-                            and ev.code in _WHEEL_CODES)                  # never pointer motion
-                if not (is_key_down or is_wheel):
-                    continue  # key-up / autorepeat / zero rel — keep waiting
-                payload = {"type": ev.type, "code": ev.code,
-                           "origin_hash": device_hash(dev),
-                           "node": dev.path, "name": code_name(ev.type, ev.code)}
-                if is_wheel:  # store direction so input-remapper can match the notch
-                    payload["analog_threshold"] = 1 if ev.value > 0 else -1
-                return "event", payload
+                payload = classify_event(ev, dev)
+                if payload is not None:
+                    return "event", payload
+
+
+def next_press(nodes, timeout: float = 0.2) -> dict | None:
+    """Wait up to ``timeout`` seconds for a deliberate press on ``nodes`` and
+    return its payload, else None on timeout — so a caller can poll in a loop and
+    check for cancellation between calls (used by the in-app calibrator)."""
+    fd_to_dev = {d.fd: d for d in nodes}
+    ready, _, _ = select.select(list(fd_to_dev), [], [], timeout)
+    for fd in ready:
+        dev = fd_to_dev.get(fd)
+        if dev is None:
+            continue
+        try:
+            events = list(dev.read())
+        except (BlockingIOError, OSError):
+            continue
+        for ev in events:
+            payload = classify_event(ev, dev)
+            if payload is not None:
+                return payload
+    return None
 
 
 def drain(nodes) -> None:
@@ -145,19 +198,12 @@ def drain(nodes) -> None:
 def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) -> dict | None:
     """Walk every hotspot of one device and record what each key emits."""
     usb = dev_layout.get("usb", "")
-    try:
-        vendor, product = (int(x, 16) for x in usb.split(":"))
-    except ValueError:
-        print(f"  ! {dev_id}: bad usb id {usb!r} in layouts.json — skipping.")
-        return None
-
-    nodes = find_nodes(vendor, product)
+    name, nodes = open_nodes(dev_layout)
     if not nodes:
-        print(f"  ! {dev_layout.get('name', dev_id)} ({usb}) not found. "
-              "Is it plugged in? Can you read /dev/input?")
+        print(f"  ! {dev_layout.get('name', dev_id)} ({usb}) not found or unreadable "
+              "(bad usb id, not plugged in, or no access to /dev/input).")
         return None
 
-    name = preset_dir_name(nodes)
     all_keys = [k for view in dev_layout["views"].values() for k in view["keys"]]
     # combos are derived from their members; unavailable controls emit no event
     hotspots = [k for k in all_keys if not (k.get("combo") or k.get("unavailable"))]
@@ -208,11 +254,7 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
                 else:
                     print("      ? commands: s=skip  b=back  q=finish")
                 continue
-            entry = {"type": payload["type"], "code": payload["code"],
-                     "origin_hash": payload["origin_hash"]}
-            if "analog_threshold" in payload:
-                entry["analog_threshold"] = payload["analog_threshold"]
-            captured[kid] = entry
+            captured[kid] = capture_entry(payload)
             print(f"      got {payload['name']}  (type={payload['type']} "
                   f"code={payload['code']})")
             drain(nodes)

@@ -12,15 +12,111 @@ import importlib.util
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 import engine
 import lighting
 
 REPO = Path(__file__).resolve().parent.parent
+
+# Sample lighting shown in demo mode (no OpenRazer) — the panel's expected shape.
+_DEMO_LIGHTING = {"error": None, "devices": [
+    {"id": "tartarus", "name": "Razer Tartarus Pro", "brightness": 80,
+     "effects": ["static", "reactive", "none"], "zones": [], "error": None},
+    {"id": "naga", "name": "Razer Naga Pro", "brightness": 100,
+     "effects": ["static", "spectrum", "breath_single", "wave", "none"],
+     "zones": [{"name": "logo", "label": "Logo",
+                "effects": ["static", "spectrum", "breath_single", "none"]},
+               {"name": "scroll_wheel", "label": "Scroll wheel",
+                "effects": ["static", "spectrum", "reactive", "none"]}],
+     "error": None}]}
+
+
+class _CaptureWorker(QThread):
+    """Reads physical presses off one grabbed device on a background thread, one
+    'armed' hotspot at a time, and persists + reports each capture. Lives only for
+    the duration of an in-app calibration session. evdev reads block, so they must
+    not run on the GUI thread."""
+    captured = Signal(str, str, str)   # dev_id, hotspot, human label
+    failed = Signal(str)
+
+    def __init__(self, dev_id, nodes, device_name, usb, all_names, parent=None):
+        super().__init__(parent)
+        self._dev_id = dev_id
+        self._nodes = nodes
+        self._device_name = device_name
+        self._usb = usb
+        self._all_names = all_names
+        self._armed = None     # hotspot id awaiting a press, or None (idle)
+        self._stop = False
+        self._lock = threading.Lock()   # guards _armed across GUI/worker threads
+
+    def arm(self, hotspot: str) -> None:
+        with self._lock:
+            self._armed = hotspot
+
+    def disarm(self) -> None:
+        with self._lock:
+            self._armed = None
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def _claim(self, hotspot: str) -> bool:
+        """Clear the armed slot iff it's still this hotspot, so a press is recorded
+        only for the key that was armed when it arrived (a re-arm mid-read wins)."""
+        with self._lock:
+            if self._armed == hotspot:
+                self._armed = None
+                return True
+            return False
+
+    def run(self) -> None:
+        import capture   # already imported by beginCalibration; cache hit here
+        grabbed = []
+        try:
+            for d in self._nodes:
+                try:
+                    d.grab()
+                    grabbed.append(d)
+                except OSError:
+                    pass   # another program holds it; reads still work without a grab
+            while not self._stop:
+                with self._lock:
+                    hotspot = self._armed
+                if hotspot is None:
+                    self.msleep(40)
+                    continue
+                payload = capture.next_press(self._nodes, timeout=0.2)
+                if self._stop:
+                    break
+                if payload is None or not self._claim(hotspot):
+                    continue   # timed out, or re-armed elsewhere meanwhile — discard
+                try:
+                    engine.record_capture(self._dev_id, self._device_name, hotspot,
+                                          capture.capture_entry(payload),
+                                          usb=self._usb, all_names=self._all_names)
+                except OSError as exc:
+                    self.failed.emit(f"couldn't save capture: {exc}")
+                    continue
+                self.captured.emit(self._dev_id, hotspot, payload.get("name", ""))
+        except Exception as exc:   # a worker crash must never take down the app
+            self.failed.emit(str(exc))
+        finally:
+            for d in grabbed:
+                try:
+                    d.ungrab()
+                except OSError:
+                    pass
+            for d in self._nodes:
+                try:
+                    d.close()
+                except OSError:
+                    pass
 
 
 def _detect_deps() -> dict:
@@ -88,6 +184,9 @@ class Backend(QObject):
     bindingsChanged = Signal()
     profilesChanged = Signal()
     liveChanged = Signal()
+    keyCaptured = Signal(str, str, str)   # in-app calibration: dev, hotspot, label
+    calibrationChanged = Signal()         # a calibration session started/ended
+    calibrationError = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -107,7 +206,13 @@ class Backend(QObject):
                                    for k in v["keys"] if k.get("unavailable")}
                              for dev, lay in self._layouts.items()}
         self._deps = _detect_deps()
+        self._demo = bool(os.environ.get("KEYZER_DEMO"))   # run fully populated, no hardware
         self._live = {}     # dev -> profile currently injected (KEYZER-tracked; daemon can't report it)
+        self._cal_worker = None   # active _CaptureWorker during in-app calibration, else None
+        self._demo_cal = False    # a simulated (no-hardware) calibration session
+        self._cal_dev = ""
+        self._shift = {}          # Hypershift layer 2: {profile: {device: {hotspot: value}}}
+        self._shiftKeys = {}      # the hold-to-shift key: {profile: {device: hotspot}}
         self._load_profiles()
 
     def _load_profiles(self) -> None:
@@ -122,6 +227,10 @@ class Backend(QObject):
                                              # real persistence is engine autoload, below
             if isinstance(saved.get("settings"), dict):
                 self._settings = saved["settings"]
+            if isinstance(saved.get("shift"), dict):
+                self._shift = saved["shift"]              # v2: Hypershift layer 2
+            if isinstance(saved.get("shiftKeys"), dict):
+                self._shiftKeys = saved["shiftKeys"]
         else:
             self._profiles = _default_profiles()
             self._active = "Gaming"
@@ -130,10 +239,13 @@ class Backend(QObject):
             self._active = next(iter(self._profiles))
 
     def _save(self) -> None:
+        if self._demo:
+            return   # demo mode is throwaway — never persist profiles/settings to disk
         engine.save_json(engine.PROFILES,
-                         {"version": 1, "active": self._active,
+                         {"version": 2, "active": self._active,
                           "live": self._live, "settings": self._settings,
-                          "profiles": self._profiles})
+                          "profiles": self._profiles,
+                          "shift": self._shift, "shiftKeys": self._shiftKeys})
 
     @Slot(str, "QVariant", result="QVariant")
     def getSetting(self, key: str, default):
@@ -152,7 +264,13 @@ class Backend(QObject):
 
     @Property("QVariant", constant=True)
     def deps(self) -> dict:
-        return self._deps
+        # Demo mode reports everything present so the whole UI is enabled and nothing
+        # is greyed out / hinting at missing hardware.
+        return {"inputRemapper": True, "openrazer": True} if self._demo else self._deps
+
+    @Property(bool, constant=True)
+    def demo(self) -> bool:
+        return self._demo
 
     @Slot(result="QVariant")
     def deviceIds(self) -> list[str]:
@@ -175,15 +293,45 @@ class Backend(QObject):
     def bindings(self) -> dict:
         return self._profiles
 
-    @Slot(str, str, str, str)
-    def setBinding(self, profile: str, dev: str, key: str, value: str) -> None:
-        self._profiles.setdefault(profile, {}).setdefault(dev, {})[key] = value
+    @Property("QVariant", notify=bindingsChanged)
+    def shiftBindings(self) -> dict:
+        """Hypershift layer-2 binds, same shape as bindings ({profile:{dev:{hotspot:value}}})."""
+        return self._shift
+
+    @Property("QVariant", notify=bindingsChanged)
+    def shiftKeysMap(self) -> dict:
+        """The hold-to-shift key per profile/device ({profile: {dev: hotspot}})."""
+        return self._shiftKeys
+
+    def _layer_map(self, layer: str) -> dict:
+        return self._shift if layer == "shift" else self._profiles
+
+    @Slot(str, str, str, str, str)
+    def setBinding(self, profile: str, dev: str, key: str, value: str, layer: str = "base") -> None:
+        self._layer_map(layer).setdefault(profile, {}).setdefault(dev, {})[key] = value
         self._save()
         self.bindingsChanged.emit()
 
+    @Slot(str, str, str, str)
+    def clearBinding(self, profile: str, dev: str, key: str, layer: str = "base") -> None:
+        self._layer_map(layer).get(profile, {}).get(dev, {}).pop(key, None)
+        self._save()
+        self.bindingsChanged.emit()
+
+    @Slot(str, str, result=str)
+    def shiftKeyFor(self, profile: str, dev: str) -> str:
+        return (self._shiftKeys.get(profile, {}) or {}).get(dev, "")
+
     @Slot(str, str, str)
-    def clearBinding(self, profile: str, dev: str, key: str) -> None:
-        self._profiles.get(profile, {}).get(dev, {}).pop(key, None)
+    def setShiftKey(self, profile: str, dev: str, hotspot: str) -> None:
+        """Designate (or clear, with hotspot="") the hold key for a device's shift layer."""
+        per = self._shiftKeys.setdefault(profile, {})
+        if hotspot:
+            per[dev] = hotspot
+        else:
+            per.pop(dev, None)
+            if not per:
+                self._shiftKeys.pop(profile, None)   # don't leave an empty residue behind
         self._save()
         self.bindingsChanged.emit()
 
@@ -237,6 +385,8 @@ class Backend(QObject):
         if err := self._reject_name(new, allow=old):
             return err
         self._profiles = {new if k == old else k: v for k, v in self._profiles.items()}
+        self._shift = {new if k == old else k: v for k, v in self._shift.items()}
+        self._shiftKeys = {new if k == old else k: v for k, v in self._shiftKeys.items()}
         if self._active == old:
             self._active = new
         self._commit()
@@ -250,6 +400,8 @@ class Backend(QObject):
         if err := self._reject_name(new):
             return err
         self._profiles[new] = copy.deepcopy(self._profiles[src])
+        self._shift[new] = copy.deepcopy(self._shift.get(src, {}))
+        self._shiftKeys[new] = copy.deepcopy(self._shiftKeys.get(src, {}))
         self._active = new
         self._commit()
         return {"ok": True, "name": new}
@@ -261,6 +413,8 @@ class Backend(QObject):
         if len(self._profiles) <= 1:
             return {"ok": False, "error": "Keep at least one profile"}
         del self._profiles[name]
+        self._shift.pop(name, None)
+        self._shiftKeys.pop(name, None)
         if self._active == name:
             self._active = next(iter(self._profiles))
         self._commit()
@@ -275,7 +429,8 @@ class Backend(QObject):
         """Serialize one profile to a shareable JSON string (copied to clipboard)."""
         if name not in self._profiles:
             return {"ok": False, "error": "No such profile"}
-        payload = {"keyzer": 1, "name": name, "binds": self._profiles[name]}
+        payload = {"keyzer": 1, "name": name, "binds": self._profiles[name],
+                   "shift": self._shift.get(name, {}), "holdKeys": self._shiftKeys.get(name, {})}
         return {"ok": True, "name": name, "json": json.dumps(payload, indent=2)}
 
     @Slot(str, result="QVariant")
@@ -294,6 +449,13 @@ class Backend(QObject):
             n += 1
         self._profiles[name] = {d: {hk: str(hv) for hk, hv in v.items()}
                                 for d, v in data["binds"].items() if isinstance(v, dict)}
+        shift = data.get("shift")
+        if isinstance(shift, dict):
+            self._shift[name] = {d: {hk: str(hv) for hk, hv in v.items()}
+                                 for d, v in shift.items() if isinstance(v, dict)}
+        hold = data.get("holdKeys")
+        if isinstance(hold, dict):
+            self._shiftKeys[name] = {d: h for d, h in hold.items() if isinstance(h, str)}
         self._active = name
         self._commit()
         return {"ok": True, "name": name}
@@ -316,6 +478,133 @@ class Backend(QObject):
         """'user' (you ran capture.py), 'default' (bundled map), or 'none'."""
         return engine.captures_origin()
 
+    # ----- in-app calibration (live evdev capture) -----
+    @Slot(result=bool)
+    def calibrating(self) -> bool:
+        return self._cal_worker is not None or self._demo_cal
+
+    @Slot(str, result="QVariant")
+    def beginCalibration(self, dev: str) -> dict:
+        """Open + grab ``dev`` for live capture. Stops input-remapper first so its
+        exclusive grab doesn't starve our reads; re-apply the profile on exit (the
+        UI does this). Returns {ok, device} or {ok:False, error} for the fallback."""
+        if dev not in self._layouts:
+            return {"ok": False, "error": "Unknown device"}
+        if self._demo:   # no hardware — captures are simulated (see armCalibration)
+            self._cal_dev = dev
+            self._demo_cal = True
+            self.calibrationChanged.emit()
+            return {"ok": True, "device": self._layouts[dev].get("name", dev)}
+        if self._cal_worker is not None:
+            return {"ok": False, "error": "Already calibrating"}
+        try:
+            import capture
+        except (ImportError, SystemExit):
+            return {"ok": False, "error": "python-evdev isn't installed — see capture.py setup"}
+        name, nodes = capture.open_nodes(self._layouts[dev])
+        if not nodes:
+            return {"ok": False,
+                    "error": "Device not found or /dev/input isn't readable — plug it in, "
+                             "or add yourself to the 'input' group and log back in."}
+        try:
+            worker = _CaptureWorker(dev, nodes, name, self._layouts[dev].get("usb", ""),
+                                    sorted({d.name for d in nodes}), parent=self)  # parented: no GC mid-run
+            worker.captured.connect(self._on_captured)
+            worker.failed.connect(self.calibrationError)
+            worker.finished.connect(worker.deleteLater)
+            # Only now (device open, worker built): free it from input-remapper so our
+            # reads aren't starved. After the guard, so a failed begin never disturbs
+            # the user's live remapping.
+            if engine.available():
+                engine.stop_all()
+            self._live = {}        # remapping is now stopped — keep the LIVE pill honest
+            self.liveChanged.emit()
+            worker.start()
+        except Exception as exc:   # something failed before the worker owns the nodes —
+            for d in nodes:        # close them here, since the worker's finally never runs
+                try:
+                    d.close()
+                except OSError:
+                    pass
+            return {"ok": False, "error": f"Couldn't start calibration: {exc}"}
+        self._cal_worker = worker
+        self._cal_dev = dev
+        self.calibrationChanged.emit()
+        return {"ok": True, "device": name}
+
+    @Slot(str)
+    def armCalibration(self, hotspot: str) -> None:
+        """Wait for the next physical press and bind it to ``hotspot``."""
+        if self._demo:   # simulate a press landing shortly after arming
+            QTimer.singleShot(350, lambda: self._demo_capture(hotspot))
+            return
+        if self._cal_worker is not None:
+            self._cal_worker.arm(hotspot)
+
+    def _demo_capture(self, hotspot: str) -> None:
+        if self._demo_cal and self._cal_dev:
+            self.keyCaptured.emit(self._cal_dev, hotspot, "demo")
+
+    @Slot()
+    def disarmCalibration(self) -> None:
+        if self._cal_worker is not None:
+            self._cal_worker.disarm()
+
+    @Slot(result="QVariant")
+    def endCalibration(self) -> dict:
+        """Stop the session and release the device (ungrab happens in the worker's
+        finally). The worker is parented to this Backend, so even the pathological
+        case where wait() times out can't GC a still-running QThread (no crash)."""
+        worker = self._cal_worker
+        self._cal_dev = ""
+        self._demo_cal = False
+        if worker is not None:
+            worker.stop()
+            worker.wait(3000)   # the read loop polls _stop every 0.2s, so this returns fast
+            self._cal_worker = None
+        self.calibrationChanged.emit()
+        return {"ok": True}
+
+    @Slot()
+    def shutdownCalibration(self) -> None:
+        """App is quitting — stop any worker so it ungrabs the device and the thread
+        isn't torn down mid-run. Wired to QGuiApplication.aboutToQuit in main.py."""
+        if self._cal_worker is not None:
+            self.endCalibration()
+
+    def _on_captured(self, dev: str, hotspot: str, label: str) -> None:
+        # runs on the GUI thread (queued cross-thread signal); the worker already
+        # persisted the entry, so just notify the UI to refresh + glow the hotspot.
+        self.keyCaptured.emit(dev, hotspot, label)
+
+    @Slot(str, result="QVariant")
+    def bindableIds(self, dev: str) -> list:
+        """Hotspots that need a captured evdev code — real keys, not derived combos
+        or controls with no Linux event. Order follows the layout (views, keys),
+        which is the order calibration walks through."""
+        out = []
+        for view in self._layouts.get(dev, {}).get("views", {}).values():
+            for k in view["keys"]:
+                if not (k.get("combo") or k.get("unavailable")):
+                    out.append(k["id"])
+        return out
+
+    @Slot(str, result="QVariant")
+    def capturedIds(self, dev: str) -> list:
+        """Hotspots the user has personally captured. The bundled default map is
+        ignored here on purpose — calibration is about recording *your* device, so
+        a fresh user sees every key as still-to-do, not pre-filled by the default."""
+        data = engine.load_json(engine.CAPTURES, {})
+        cap = data.get(dev) if isinstance(data, dict) else None
+        return list((cap.get("captured") or {}).keys()) if isinstance(cap, dict) else []
+
+    def _bindable(self, dev: str, binds: dict | None) -> dict:
+        """Keep only real, bindable hotspots that exist on this device — drops orphans
+        and unavailable controls (combos are joined separately at apply time)."""
+        return {h: v for h, v in (binds or {}).items()
+                if h in self._hotspot_ids.get(dev, set())
+                and h not in self._unavailable.get(dev, set())}
+
     @Slot(str, str, result="QVariant")
     def applyToHardware(self, profile: str, dev: str = "") -> dict:
         """Generate + load an input-remapper preset for the profile — all devices,
@@ -331,15 +620,18 @@ class Backend(QObject):
             # a full apply covers EVERY known device, so switching to a profile that
             # leaves a device unbound reverts it rather than leaving the old one live.
             src = {d: prof.get(d, {}) for d in self._layouts}
-        binds = {d: {h: v for h, v in (b or {}).items()
-                     if h in self._hotspot_ids.get(d, set())
-                     and h not in self._unavailable.get(d, set())}
-                 for d, b in src.items()}
+        binds = {d: self._bindable(d, b) for d, b in src.items()}
+        if self._demo:
+            return self._demo_apply(profile, binds)
+        # Hypershift layer 2 — same bindable filter, plus the per-device hold key.
+        shift = {d: self._bindable(d, (self._shift.get(profile) or {}).get(d)) for d in binds}
+        shift_keys = {d: (self._shiftKeys.get(profile) or {}).get(d, "") for d in binds}
         # Apply always persists: the preset is injected now AND registered with
         # input-remapper's autoload so it survives a reboot/replug. Stop is the
         # only "turn it off" — there is no reset-on-restart mode.
         report = engine.apply_profile(profile, binds, engine.load_captures(),
-                                      autoload=True, combos=self._combos)
+                                      autoload=True, combos=self._combos,
+                                      shift=shift, shift_keys=shift_keys)
         if "_error" in report:
             return {"ok": False, "message": report["_error"], "devices": []}
         devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
@@ -359,6 +651,23 @@ class Backend(QObject):
         msg = f"{total} bindings live." if all_ok else "Applied with issues — see below."
         return {"ok": all_ok, "message": msg, "devices": devices}
 
+    def _demo_apply(self, profile: str, binds: dict) -> dict:
+        """Simulated apply for demo mode — updates the live set and returns the same
+        report shape as applyToHardware, with no input-remapper involved."""
+        devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
+                    "ok": True, "count": len(b), "warnings": [], "error": None}
+                   for d, b in binds.items()]
+        if not devices:
+            return {"ok": False, "message": "Nothing to apply for this profile.", "devices": []}
+        for x in devices:
+            if x["count"]:
+                self._live[x["dev"]] = profile
+            else:
+                self._live.pop(x["dev"], None)
+        self.liveChanged.emit()
+        total = sum(x["count"] for x in devices)
+        return {"ok": True, "message": f"{total} bindings live (demo).", "devices": devices}
+
     @Property("QVariant", notify=liveChanged)
     def liveStatus(self) -> dict:
         return dict(self._live)
@@ -367,6 +676,10 @@ class Backend(QObject):
     def stopAll(self) -> dict:
         """Stop injecting on all devices (back to defaults) and drop KEYZER's
         autoload entries, so the mappings don't reload at the next login/replug."""
+        if self._demo:
+            self._live = {}
+            self.liveChanged.emit()
+            return {"ok": True, "error": None}
         if not engine.available():
             return {"ok": False, "error": "input-remapper not installed"}
         ok = engine.stop_all()
@@ -380,6 +693,8 @@ class Backend(QObject):
     @Slot(result="QVariant")
     def lightingDevices(self) -> dict:
         """Connected, lightable devices (or an error) for the lighting panel."""
+        if self._demo:
+            return _DEMO_LIGHTING
         d = lighting.devices()
         if "_error" in d:
             return {"error": d["_error"], "devices": []}
@@ -391,19 +706,25 @@ class Backend(QObject):
 
     @Slot(str, str, int, int, int, str, result="QVariant")
     def setLightEffect(self, dev: str, effect: str, r: int, g: int, b: int, zone: str) -> dict:
+        if self._demo:
+            return {"ok": True}
         return lighting.set_effect(dev, effect, (r, g, b), zone=zone)
 
     @Slot(str, int, result="QVariant")
     def setLightBrightness(self, dev: str, pct: int) -> dict:
+        if self._demo:
+            return {"ok": True}
         return lighting.set_brightness(dev, pct)
 
     @Slot(result=bool)
     def lightingSync(self) -> bool:
         """Whether OpenRazer is mirroring effects across all Chroma devices."""
-        return lighting.sync_enabled()
+        return False if self._demo else lighting.sync_enabled()
 
     @Slot(bool, result="QVariant")
     def setLightingSync(self, enabled: bool) -> dict:
+        if self._demo:
+            return {"ok": True}
         return lighting.set_sync(enabled)
 
     # ----- align / copy-layout -----
@@ -419,5 +740,6 @@ class Backend(QObject):
         names = ("KEYZER_DEV", "KEYZER_VIEW", "KEYZER_PROFILE", "KEYZER_SELECT",
                  "KEYZER_LIGHTING", "KEYZER_ALIGN", "KEYZER_RESULT",
                  "KEYZER_DIALOG", "KEYZER_LIVE", "KEYZER_LIGHTPANEL", "KEYZER_HINT",
-                 "KEYZER_LISTEN")
+                 "KEYZER_LISTEN", "KEYZER_CALIBRATE", "KEYZER_SHIFT", "KEYZER_COMPARE",
+                 "KEYZER_SHOT")
         return {n: os.environ.get(n, "") for n in names}

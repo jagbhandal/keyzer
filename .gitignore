@@ -16,4 +16,9 @@ dist-app/
 # Internal marketing collateral — kept locally, never published
 docs/marketing/
 
+# Generated screenshots (tools/make_screenshots.py) — regenerated on demand; the
+# final set is committed deliberately during a README refresh, not auto-tracked.
+docs/screenshots/*.png
+docs/screenshots/*.gif
+
 # Note: dist/keyzer.html is committed on purpose (openable prototype build)

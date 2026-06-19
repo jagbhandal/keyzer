@@ -474,6 +474,107 @@ class AutoloadTests(unittest.TestCase):
             finally:
                 engine._ir_version.cache_clear()
 
+class RecordCaptureTests(unittest.TestCase):
+    """engine.record_capture — incremental merge into captures.json (the in-app
+    calibrator writes one hotspot at a time as the user presses keys)."""
+
+    def test_creates_file_and_device_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "captures.json"
+            engine.record_capture("tartarus", "Razer Tartarus Pro", "TAR_01",
+                                  {"type": 1, "code": 1, "origin_hash": "a1"},
+                                  usb="1532:0244", all_names=["Razer Tartarus Pro"], path=p)
+            data = json.loads(p.read_text())
+            self.assertEqual(data["tartarus"]["device_name"], "Razer Tartarus Pro")
+            self.assertEqual(data["tartarus"]["usb"], "1532:0244")
+            self.assertEqual(data["tartarus"]["captured"]["TAR_01"],
+                             {"type": 1, "code": 1, "origin_hash": "a1"})
+
+    def test_merges_without_dropping_existing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "captures.json"
+            engine.record_capture("tartarus", "Razer Tartarus Pro", "TAR_01",
+                                  {"type": 1, "code": 1, "origin_hash": "a1"}, path=p)
+            engine.record_capture("tartarus", "Razer Tartarus Pro", "TAR_02",
+                                  {"type": 1, "code": 2, "origin_hash": "a1"}, path=p)
+            captured = json.loads(p.read_text())["tartarus"]["captured"]
+            self.assertEqual(set(captured), {"TAR_01", "TAR_02"})   # both kept
+
+    def test_second_device_added_independently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "captures.json"
+            engine.record_capture("tartarus", "Razer Tartarus Pro", "TAR_01",
+                                  {"type": 1, "code": 1, "origin_hash": "a1"}, path=p)
+            engine.record_capture("naga", "Razer Naga Pro", "NAGA_01",
+                                  {"type": 1, "code": 2, "origin_hash": "b2"}, path=p)
+            self.assertEqual(set(json.loads(p.read_text())), {"tartarus", "naga"})
+
+    def test_recapture_overwrites_same_hotspot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "captures.json"
+            engine.record_capture("tartarus", "Razer Tartarus Pro", "TAR_01",
+                                  {"type": 1, "code": 1, "origin_hash": "a1"}, path=p)
+            engine.record_capture("tartarus", "Razer Tartarus Pro", "TAR_01",
+                                  {"type": 1, "code": 99, "origin_hash": "a1",
+                                   "analog_threshold": 1}, path=p)
+            entry = json.loads(p.read_text())["tartarus"]["captured"]["TAR_01"]
+            self.assertEqual(entry["code"], 99)
+            self.assertEqual(entry["analog_threshold"], 1)
+
+    def test_corrupt_file_preserved_as_sidecar(self):
+        # A corrupt captures.json must not be silently wiped: it's kept as a
+        # .corrupt sidecar while a fresh valid one is written with the new capture.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "captures.json"
+            p.write_text("{ not json ]")
+            engine.record_capture("tartarus", "Razer Tartarus Pro", "TAR_01",
+                                  {"type": 1, "code": 1, "origin_hash": "a1"}, path=p)
+            self.assertIn("TAR_01",
+                          json.loads(p.read_text())["tartarus"]["captured"])
+            sidecar = p.with_name(p.name + ".corrupt")
+            self.assertTrue(sidecar.exists())
+            self.assertEqual(sidecar.read_text(), "{ not json ]")
+
+
+class ShiftLayerTests(unittest.TestCase):
+    """engine.build_preset Hypershift: a shift bind becomes a [hold, target]
+    combination that longest-match picks over the base single-key mapping."""
+
+    def setUp(self):
+        self.caps = {
+            "TAR_11": {"type": 1, "code": 42, "origin_hash": "a1"},   # the hold key
+            "TAR_01": {"type": 1, "code": 2, "origin_hash": "a1"},
+            "TAR_02": {"type": 1, "code": 3, "origin_hash": "a1"},
+        }
+
+    def test_shift_bind_becomes_hold_combination(self):
+        mappings, warnings = engine.build_preset(
+            {"TAR_01": "Esc"}, self.caps,
+            shift_binds={"TAR_02": "F1"}, shift_key="TAR_11")
+        self.assertEqual(warnings, [])
+        base = next(m for m in mappings if m["output_symbol"] == "Escape")
+        self.assertEqual(len(base["input_combination"]), 1)        # base = single key
+        sh = next(m for m in mappings if m["output_symbol"] == "F1")
+        ic = sh["input_combination"]
+        self.assertEqual([x["code"] for x in ic], [42, 3])         # [hold, target]
+
+    def test_shift_skips_the_hold_key_itself(self):
+        mappings, _ = engine.build_preset(
+            {}, self.caps, shift_binds={"TAR_11": "X"}, shift_key="TAR_11")
+        self.assertEqual(mappings, [])   # the hold key can't be its own shift target
+
+    def test_uncaptured_hold_key_warns(self):
+        mappings, warnings = engine.build_preset(
+            {}, self.caps, shift_binds={"TAR_01": "F1"}, shift_key="NOPE")
+        self.assertEqual(mappings, [])
+        self.assertTrue(any("hold key" in w for w in warnings))
+
+    def test_no_hold_key_yields_no_shift_mappings(self):
+        mappings, _ = engine.build_preset(
+            {}, self.caps, shift_binds={"TAR_01": "F1"}, shift_key="")
+        self.assertEqual(mappings, [])
+
+
 class ApplyRevertTests(unittest.TestCase):
     """engine.apply_profile reverts a captured device the profile leaves unbound
     (stop + clear_autoload) so 'active profile = live' holds. All daemon-facing

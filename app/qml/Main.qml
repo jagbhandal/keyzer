@@ -27,6 +27,7 @@ Rectangle {
     readonly property color bg0: "#0c0c11"
     readonly property color danger: "#d65c44"
     readonly property color amber: "#e0a83a"
+    readonly property color violet: "#9b8cff"       // Hypershift second-layer accent
 
     // ---------- neon: "powered on" pulse driver ----------
     // one shared low-amplitude oscillation; everything energized reads off this,
@@ -131,18 +132,65 @@ Rectangle {
     }
     property string dirtyText: "All changes saved"
     property var applyResult: null          // last Apply-to-hardware report
+    property string compareProfile: ""      // profile-diff: compare the active profile against this one
+    readonly property var applyHealth: {    // honest footer numbers from the last apply
+        var r = root.applyResult
+        if (!r || !r.devices || !r.devices.length) return null
+        var live = 0, dropped = 0, failed = 0
+        for (var i = 0; i < r.devices.length; i++) {
+            var d = r.devices[i]
+            if (d.ok) live += (d.count || 0)
+            else if (d.error && d.error !== "no applicable binds") failed++   // a device that didn't apply
+            dropped += (d.warnings ? d.warnings.length : 0)
+        }
+        return { live: live, dropped: dropped, failed: failed }
+    }
     property var capSummary: ({})            // per-device captured-key counts
     property bool qaLive: false              // offscreen QA: force the LIVE pill visible
     property string capSource: "none"        // 'user' | 'default' | 'none' — drives the calibrate hint
     property bool hintDismissed: false
+    property bool shotMode: false            // a screenshot is being captured — hide demo chrome
+    // ---- live in-app calibration ----
+    property bool calibrating: false         // calibrate mode active
+    property string armedKey: ""             // hotspot awaiting a physical press (pulses)
+    property var capturedIds: []             // hotspots the user has captured (this device)
+    property var calBindable: []             // hotspots that need a code, in walk order
+    readonly property int calDone: {         // captured keys that actually need calibrating
+        var n = 0
+        for (var i = 0; i < calBindable.length; i++)
+            if (capturedIds.indexOf(calBindable[i]) >= 0) n++
+        return n
+    }
 
     // ---------- derived ----------
     readonly property var device: backend.layouts[curDev]
     readonly property var viewObj: (device && curView && device.views[curView]) ? device.views[curView] : null
     readonly property var viewNames: backend.viewNames(curDev)
+    property string bindLayer: "base"            // "base" | "shift" (Hypershift layer 2)
+    property bool pickingHoldKey: false      // next hotspot click designates the hold key
     readonly property var bindMap: {
-        var p = backend.bindings[curProfile]
+        var src = root.bindLayer === "shift" ? backend.shiftBindings : backend.bindings
+        var p = src[curProfile]
         return (p && p[curDev]) ? p[curDev] : ({})
+    }
+    readonly property string holdKey: {      // the hold-to-shift key for this profile+device
+        var m = backend.shiftKeysMap[curProfile]
+        return (m && m[curDev]) ? m[curDev] : ""
+    }
+    readonly property var compareMap: {      // the compared profile's binds for this device+layer
+        if (root.compareProfile === "") return ({})
+        var src = root.bindLayer === "shift" ? backend.shiftBindings : backend.bindings
+        var p = src[root.compareProfile]
+        return (p && p[curDev]) ? p[curDev] : ({})
+    }
+    // profile-diff state for a hotspot vs the compared profile (same layer)
+    function diffState(id) {
+        if (root.compareProfile === "" || root.compareProfile === root.curProfile) return ""
+        var a = root.bindMap[id], b = root.compareMap[id]
+        if (a === b) return a === undefined ? "" : "same"
+        if (a !== undefined && b === undefined) return "here"
+        if (a === undefined) return "there"
+        return "changed"
     }
     // hotspots in the CURRENT view whose output is shared with another visible
     // hotspot (scoped to the view so cross-view dups, e.g. WASD on keypad + thumb,
@@ -160,8 +208,30 @@ Rectangle {
     // ---------- logic ----------
     function firstView(dev) { return backend.viewNames(dev)[0] }
     function selectKey(id) { selKey = id; capValue = ""; listening = false }
-    function deselect() { selKey = ""; capValue = ""; listening = false }
-    function switchDevice(dev) { curDev = dev; curView = firstView(dev); deselect(); syncLightDevice() }
+    function deselect() { selKey = ""; capValue = ""; listening = false; pickingHoldKey = false }
+    function setLayer(l) { root.bindLayer = l; root.pickingHoldKey = false; root.deselect() }
+    function setHoldKeyTo(id) {   // designate a hotspot as the shift hold key, then re-apply
+        var clearing = id === root.holdKey
+        backend.setShiftKey(root.curProfile, root.curDev, clearing ? "" : id)
+        root.pickingHoldKey = false
+        root.applyActiveProfile()
+        if (clearing) { showToast("Hold key cleared"); return }
+        var base = backend.bindings[curProfile]
+        var baseBound = (base && base[curDev]) ? base[curDev][id] : undefined
+        if (baseBound !== undefined && baseBound !== "")
+            showToast(id.replace(/_/g, " ") + " is the hold key — clear its base bind (" + baseBound + ") so it doesn't fire when held")
+        else
+            showToast(id.replace(/_/g, " ") + " is now the hold key")
+    }
+    function switchDevice(dev) {
+        if (root.calibrating && dev !== curDev) {   // follow calibration to the new device
+            backend.endCalibration()
+            curDev = dev; curView = firstView(dev); deselect(); syncLightDevice()
+            if (!enterCalibrate()) { root.calibrating = false; applyActiveProfile() }   // restore binds on failure
+            return
+        }
+        curDev = dev; curView = firstView(dev); deselect(); syncLightDevice()
+    }
     function markDirty() { dirtyText = "● Unsaved → autosaving…"; dirtyTimer.restart() }
     function showToast(m) { toast.msg = m; toast.show() }
     function curBinding() { return bindMap[selKey] !== undefined ? bindMap[selKey] : "" }
@@ -169,17 +239,32 @@ Rectangle {
     function ovKey(id) { return curDev + "|" + curView + "|" + id }
     function setCoord(id, nx, ny) { var m = ov; m[ovKey(id)] = { x: Math.round(nx), y: Math.round(ny) }; ov = m }
     function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }   // theme color at alpha
+    function mergeApplyResult(r) {   // fold a per-device apply into the whole-profile health
+        if (!r || !r.devices) return
+        if (!root.applyResult || !root.applyResult.devices) { root.applyResult = r; return }
+        var idx = {}, devs = root.applyResult.devices.slice()
+        for (var i = 0; i < devs.length; i++) idx[devs[i].dev] = i
+        for (var j = 0; j < r.devices.length; j++) {
+            var d = r.devices[j]
+            if (idx[d.dev] !== undefined) devs[idx[d.dev]] = d
+            else devs.push(d)
+        }
+        root.applyResult = { ok: devs.every(function (x) { return x.ok }), message: root.applyResult.message, devices: devs }
+    }
 
     function applyBinding() {
         if (selKey === "") return
         listening = false                                     // committing ends listen mode
         var v = capValue !== "" ? capValue : curBinding()
         if (v === "" || v === "—") { showToast("Pick a binding first"); return }
-        backend.setBinding(curProfile, curDev, selKey, v)
+        backend.setBinding(curProfile, curDev, selKey, v, root.bindLayer)
         markDirty()
         var r = backend.applyToHardware(curProfile, curDev)   // set AND push live, one step
+        root.mergeApplyResult(r)                              // keep the footer health current
         var warn = bindWarning(r, selKey)                     // did THIS bind get dropped server-side?
         if (warn) showToast("⚠ not applied — " + warn)
+        else if (root.bindLayer === "shift" && root.holdKey === "")
+            showToast(selKey.replace(/_/g, " ") + " → " + v + "  · set a hold key to activate")
         else if (r.ok) showToast(selKey.replace(/_/g, " ") + " → " + v + "  · live")
         else {
             var e = (r.devices && r.devices.length) ? (r.devices[0].error || r.message) : r.message
@@ -193,14 +278,18 @@ Rectangle {
     function bindWarning(report, key) {
         return (report.devices || [])
             .reduce(function (all, d) { return all.concat(d.warnings || []) }, [])
-            .find(function (w) { return w.indexOf(key + ":") === 0 || w.indexOf(key + " ") === 0 }) || ""
+            .find(function (w) {
+                var s = w.indexOf("shift ") === 0 ? w.slice(6) : w   // shift-layer warnings are 'shift '-prefixed
+                return s.indexOf(key + ":") === 0 || s.indexOf(key + " ") === 0
+            }) || ""
     }
     function clearBinding() {
         if (selKey === "") return
         listening = false
-        backend.clearBinding(curProfile, curDev, selKey)
+        backend.clearBinding(curProfile, curDev, selKey, root.bindLayer)
         capValue = ""; markDirty()
         var r = backend.applyToHardware(curProfile, curDev)
+        root.mergeApplyResult(r)
         showToast(r.ok ? "Cleared · live" : "Cleared")
     }
     function applyActiveProfile() {   // the active profile is always what's live — push it
@@ -222,6 +311,40 @@ Rectangle {
         var r = backend.stopAll()
         showToast(r.ok ? "Remapping stopped — devices back to default" : (r.error || "Stop failed"))
     }
+    // ---- in-app calibration: click a key, press it, it locks in ----
+    function refreshCaptured() { root.capturedIds = backend.capturedIds(root.curDev) }
+    function armKey(id) {
+        if (!root.calibrating) return
+        if (root.calBindable.indexOf(id) < 0) return   // combos / unavailable can't be calibrated
+        root.armedKey = id; backend.armCalibration(id)
+    }
+    function armFrom(start) {   // arm the first uncaptured bindable at/after `start`
+        for (var i = start; i < root.calBindable.length; i++)
+            if (root.capturedIds.indexOf(root.calBindable[i]) < 0) { root.armKey(root.calBindable[i]); return true }
+        return false
+    }
+    function armNextUncaptured() { if (!armFrom(0)) { root.armedKey = ""; backend.disarmCalibration() } }
+    function skipArmed() {
+        var start = root.armedKey === "" ? 0 : root.calBindable.indexOf(root.armedKey) + 1
+        if (!armFrom(start)) armNextUncaptured()   // none after — wrap to any remaining
+    }
+    function enterCalibrate() {
+        var r = backend.beginCalibration(root.curDev)
+        if (!r.ok) { showToast(r.error); return false }
+        root.aligning = false; root.lighting = false; root.deselect()
+        root.calBindable = backend.bindableIds(root.curDev)
+        root.calibrating = true
+        refreshCaptured()
+        if (!backend.demo) armNextUncaptured()   // demo: click a key to calibrate it (no auto-advance)
+        return true
+    }
+    function exitCalibrate() {
+        backend.endCalibration()
+        root.calibrating = false; root.armedKey = ""
+        root.capSummary = backend.captureSummary(); root.capSource = backend.capturesSource()
+        applyActiveProfile()   // restore live binds (calibration had stopped them)
+    }
+    function toggleCalibrate() { if (root.calibrating) exitCalibrate(); else enterCalibrate() }
     // Keys that are modifiers on their own — a lone press of one isn't a binding.
     readonly property var modifierKeys: [Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
                                          Qt.Key_Super_L, Qt.Key_Super_R, Qt.Key_AltGr]
@@ -275,6 +398,15 @@ Rectangle {
         if (q.KEYZER_LIVE) qaLive = true
         if (q.KEYZER_HINT) capSource = "default"
         if (q.KEYZER_LIGHTPANEL) root.openLightingDemo()
+        if (q.KEYZER_SHOT) root.shotMode = true   // screenshot render — drop the demo badge
+        if (q.KEYZER_SHIFT === "1") root.bindLayer = "shift"   // QA: render the Hypershift layer
+        if (q.KEYZER_COMPARE) root.compareProfile = q.KEYZER_COMPARE   // QA: render profile-diff
+        if (q.KEYZER_CALIBRATE === "1") {   // QA: render calibrate mode without a live capture session
+            root.calBindable = backend.bindableIds(root.curDev)
+            root.capturedIds = root.calBindable.slice(0, 5)   // a few already set
+            root.armedKey = root.calBindable.length > 5 ? root.calBindable[5] : ""
+            root.calibrating = true
+        }
         // restore the lighting view-mode across restarts (persisted pref)
         if (backend.getSetting("lighting", false) === true && !root.lighting) { root.lighting = true; root.enterLighting() }
     }
@@ -284,14 +416,34 @@ Rectangle {
         id: applyTimer; interval: 60
         onTriggered: {
             var r = backend.applyToHardware(root.curProfile, "")
+            if (r.devices && r.devices.length) root.applyResult = r   // whole-profile health snapshot
             if (r.ok) { root.showToast(root.curProfile + " — " + r.message); return }
-            if (root.hasApplyIssue(r)) { root.applyResult = r; resultOverlay.visible = true; return }
+            if (root.hasApplyIssue(r)) { resultOverlay.visible = true; return }
             // benign (empty profile) or daemon unreachable — a toast is enough, no overlay
             root.showToast((r.devices && r.devices.length) ? ("Switched to " + root.curProfile)
                                                            : (root.curProfile + " — " + r.message))
         }
     }
     Timer { running: root.lighting; interval: 220; repeat: true; onTriggered: root.litStep++ }
+
+    // live calibration: each physical press the worker captures lands here
+    Connections {
+        target: backend
+        function onKeyCaptured(dev, hotspot, label) {
+            if (!root.calibrating || dev !== root.curDev) return
+            if (backend.demo) {   // simulated capture — track in memory (no disk), no auto-advance
+                if (root.capturedIds.indexOf(hotspot) < 0) {
+                    var c = root.capturedIds.slice(); c.push(hotspot); root.capturedIds = c
+                }
+                root.armedKey = ""
+            } else {
+                root.refreshCaptured()
+                root.armNextUncaptured()
+            }
+            root.showToast("Got it — " + hotspot.replace(/_/g, " ") + (label ? "  (" + label + ")" : ""))
+        }
+        function onCalibrationError(msg) { root.showToast("Calibrate — " + msg) }
+    }
 
     // ================= ambient backdrop (neon) =================
     // a quiet vertical wash + a faint green floor-glow so the whole surface
@@ -314,6 +466,19 @@ Rectangle {
     }
 
     // ================= inline components =================
+    component PulseDot: Rectangle {   // a small breathing status dot (live/recording)
+        id: pd
+        property bool active: true
+        property real lo: 0.3
+        property int half: 600
+        radius: width / 2
+        SequentialAnimation on opacity {
+            running: pd.active; loops: Animation.Infinite
+            NumberAnimation { to: pd.lo; duration: pd.half }
+            NumberAnimation { to: 1.0; duration: pd.half }
+        }
+    }
+
     component FlatSwitch: Item {
         id: sw
         property bool on: false
@@ -363,6 +528,12 @@ Rectangle {
         property bool conflict: false
         property string unavailable: ""
         property int litIndex: 0
+        property bool calibrating: false   // calibrate mode on
+        property bool captured: false      // user has a recorded code for this key
+        property bool armed: false         // awaiting a press for this key right now
+        property bool combo: false         // derived 8-way diagonal — not directly captured
+        property bool isHold: false        // the Hypershift hold key (shown in the shift layer)
+        property string diff: ""           // profile-diff: ""|"same"|"changed"|"here"|"there"
         width: k.w; height: k.h
         opacity: hs.unavailable !== "" ? 0.45 : 1
         Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
@@ -397,20 +568,72 @@ Rectangle {
             border.width: 1
             border.color: root.alpha(root.greenHot, 0.5 + 0.4 * root.pulse)
         }
+        // ---- calibrate states: armed (press it now) is the one bold moment ----
+        Rectangle {   // armed bloom
+            visible: hs.armed
+            anchors.fill: parent; anchors.margins: -16; radius: 22
+            color: root.alpha(root.amber, 0.10 + 0.10 * root.pulse)
+        }
+        Rectangle {   // armed ring — pulsing amber "press it"
+            visible: hs.armed
+            anchors.fill: parent; radius: 9
+            color: root.alpha(root.amber, 0.14 + 0.08 * root.pulse)
+            border.width: 2; border.color: root.alpha(root.amber, 0.6 + 0.4 * root.pulse)
+        }
+        Rectangle {   // captured ✓ — quiet green confirmation
+            visible: hs.calibrating && hs.captured && !hs.armed
+            anchors.fill: parent; radius: 9
+            color: root.alpha(root.green, 0.07)
+            border.width: 1.5; border.color: root.alpha(root.green, 0.55)
+        }
+        Rectangle {   // still-to-do — a faint outline so the work left is legible, not loud
+            visible: hs.calibrating && !hs.captured && !hs.armed && !hs.combo && hs.unavailable === ""
+            anchors.fill: parent; radius: 9
+            color: "transparent"
+            border.width: 1; border.color: root.alpha(root.muted2, 0.45)
+        }
+        Rectangle {   // Hypershift hold-key marker (violet)
+            visible: hs.isHold
+            anchors.fill: parent; radius: 9
+            color: root.alpha(root.violet, 0.12)
+            border.width: 2; border.color: root.violet
+        }
+        Rectangle {   // profile-diff tint (compare mode): green=same, amber=changed, cyan=only-here, violet=only-there
+            visible: hs.diff !== ""
+            anchors.fill: parent; radius: 9
+            color: hs.diff === "changed" ? root.alpha(root.amber, 0.14)
+                 : hs.diff === "here" ? root.alpha(root.cyan, 0.12)
+                 : hs.diff === "there" ? root.alpha(root.violet, 0.10)
+                 : root.alpha(root.green, 0.05)
+            border.width: hs.diff === "same" ? 1 : 2
+            border.color: hs.diff === "changed" ? root.amber
+                        : hs.diff === "here" ? root.cyan
+                        : hs.diff === "there" ? root.violet
+                        : root.alpha(root.green, 0.4)
+        }
         Rectangle {
             id: pill
-            visible: hs.binding !== "" || hs.selected || hs.unavailable !== ""
+            visible: hs.calibrating ? (hs.armed || hs.captured || hs.unavailable !== "")
+                                    : (hs.binding !== "" || hs.selected || hs.unavailable !== "" || hs.isHold)
             anchors.centerIn: parent
             width: Math.max(26, pillTxt.implicitWidth + 14); height: 24; radius: 6
             color: Qt.rgba(0.03, 0.035, 0.024, 0.86)
             border.width: hs.selected ? 1.5 : 1
             border.color: hs.unavailable !== "" ? root.line2
+                        : hs.calibrating ? (hs.armed ? root.amber : root.green)
+                        : hs.isHold ? root.violet
                         : hs.conflict ? root.amber
                         : hs.selected ? root.greenHot : root.alpha(root.green, 0.45)
             Text {
                 id: pillTxt; anchors.centerIn: parent
-                text: hs.unavailable !== "" ? "n/a" : (hs.binding !== "" ? hs.binding : (hs.selected ? "·" : ""))
-                color: hs.unavailable !== "" ? root.muted2 : (hs.conflict ? root.amber : (hs.selected ? root.greenHot : root.green))
+                text: hs.unavailable !== "" ? "n/a"
+                    : hs.calibrating ? (hs.armed ? "●" : hs.captured ? "✓" : "")
+                    : hs.isHold ? "HOLD"
+                    : (hs.binding !== "" ? hs.binding : (hs.selected ? "·" : ""))
+                color: hs.unavailable !== "" ? root.muted2
+                     : hs.calibrating ? (hs.armed ? root.amber : root.green)
+                     : hs.isHold ? root.violet
+                     : hs.conflict ? root.amber : (hs.selected ? root.greenHot : root.green)
                 font.pixelSize: 14; font.bold: true
             }
         }
@@ -423,7 +646,23 @@ Rectangle {
             border.color: root.glowColor()   // the real applied colour/effect, not a fake rainbow
         }
         HoverHandler { id: hov; cursorShape: root.aligning ? Qt.SizeAllCursor : Qt.PointingHandCursor }
-        TapHandler { enabled: !root.aligning && !root.lighting; onTapped: hs.unavailable !== "" ? root.showToast(hs.unavailable) : root.selectKey(hs.k.id) }
+        TapHandler {
+            enabled: !root.aligning && !root.lighting
+            onTapped: {
+                if (hs.unavailable !== "") { root.showToast(hs.unavailable); return }
+                if (root.pickingHoldKey) {
+                    if (hs.combo) root.showToast("Pick a single key as the hold key")
+                    else root.setHoldKeyTo(hs.k.id)
+                    return
+                }
+                if (root.calibrating) {
+                    if (hs.combo) root.showToast("8-way diagonals are set from their two keys — no need to calibrate")
+                    else root.armKey(hs.k.id)
+                    return
+                }
+                root.selectKey(hs.k.id)
+            }
+        }
         DragHandler { enabled: root.aligning; target: hs; onActiveChanged: if (!active) root.setCoord(hs.k.id, hs.x, hs.y) }
     }
 
@@ -498,6 +737,17 @@ Rectangle {
                 Text { textFormat: Text.RichText; text: "KEY<font color='#44d62c'>ZER</font>"; color: root.txt; font.pixelSize: 16; font.bold: true; font.letterSpacing: 2 }
                 Text { text: "VISUAL REMAPPING · LINUX"; color: root.muted2; font.pixelSize: 9; font.letterSpacing: 0.5 }
             }
+            Rectangle {   // demo-mode badge — for interactive demo users; hidden in screenshots
+                visible: backend.demo && !root.shotMode
+                anchors.verticalCenter: parent.verticalCenter
+                width: demoRow.implicitWidth + 16; height: 22; radius: 6
+                color: root.panel2; border.width: 1; border.color: root.alpha(root.cyan, 0.55)
+                Row {
+                    id: demoRow; anchors.centerIn: parent; spacing: 6
+                    Text { text: "DEMO"; color: root.cyan; font.pixelSize: 10; font.bold: true; font.letterSpacing: 1.5; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "no hardware · simulated"; color: root.muted2; font.pixelSize: 9; anchors.verticalCenter: parent.verticalCenter }
+                }
+            }
         }
 
         Row {
@@ -524,7 +774,7 @@ Rectangle {
                             model: backend.profileList
                             MenuItem {
                                 text: (modelData === root.curProfile ? "●  " : "      ") + modelData
-                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile(); root.applyActiveProfile() }
+                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile(); root.deselect(); if (root.compareProfile === root.curProfile) root.compareProfile = ""; if (root.calibrating) root.exitCalibrate(); else root.applyActiveProfile() }
                             }
                         }
                         MenuSeparator {}
@@ -537,6 +787,35 @@ Rectangle {
                         MenuSeparator {}
                         MenuItem { text: "🗑  Delete"; enabled: backend.profileList.length > 1
                             onTriggered: nameDialog.open("delete", "Delete profile", "") }
+                    }
+                }
+            }
+            // profile-diff: compare the active profile against another
+            Rectangle {
+                id: cmpDd
+                anchors.verticalCenter: parent.verticalCenter
+                width: cmpRow.implicitWidth + 24; height: 34; radius: 9
+                color: root.compareProfile !== "" ? root.alpha(root.cyan, 0.14) : root.panel2
+                border.width: 1; border.color: (cmpMa.containsMouse || root.compareProfile !== "") ? root.cyan : root.lineC
+                Row {
+                    id: cmpRow; anchors.centerIn: parent; spacing: 6
+                    Text { anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12; font.bold: true
+                           text: root.compareProfile !== "" ? ("vs " + root.compareProfile) : "Compare"
+                           color: root.compareProfile !== "" ? root.cyan : root.muted }
+                    Text { anchors.verticalCenter: parent.verticalCenter; text: "▾"; color: root.muted; font.pixelSize: 11 }
+                }
+                MouseArea { id: cmpMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: cmpMenu.open() }
+                Menu {
+                    id: cmpMenu; y: cmpDd.height + 4
+                    MenuItem { text: "Off"; onTriggered: root.compareProfile = "" }
+                    MenuSeparator {}
+                    Repeater {
+                        model: backend.profileList
+                        MenuItem {
+                            enabled: modelData !== root.curProfile
+                            text: (modelData === root.compareProfile ? "●  " : "      ") + modelData
+                            onTriggered: root.compareProfile = modelData
+                        }
                     }
                 }
             }
@@ -553,14 +832,10 @@ Rectangle {
                 }
                 Row {
                     id: liveRow; anchors.centerIn: parent; spacing: 7
-                    Rectangle {
-                        width: 8; height: 8; radius: 4; anchors.verticalCenter: parent.verticalCenter
+                    PulseDot {
+                        width: 8; height: 8; anchors.verticalCenter: parent.verticalCenter
                         color: lpMa.containsMouse ? root.danger : root.green
-                        SequentialAnimation on opacity {
-                            running: livePill.visible; loops: Animation.Infinite
-                            NumberAnimation { to: 0.35; duration: 700 }
-                            NumberAnimation { to: 1.0; duration: 700 }
-                        }
+                        active: livePill.visible; lo: 0.35; half: 700
                     }
                     Text {
                         anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 11; font.bold: true; font.letterSpacing: 1
@@ -571,11 +846,17 @@ Rectangle {
                 MouseArea { id: lpMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.stopHardware() }
             }
             FlatSwitch {
+                anchors.verticalCenter: parent.verticalCenter; label: "CALIBRATE"
+                enabled: backend.deps.inputRemapper; on: root.calibrating
+                accent: root.alpha(root.amber, 0.5); accentBorder: root.amber
+                onToggled: root.toggleCalibrate()
+            }
+            FlatSwitch {
                 anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"
                 enabled: backend.deps.openrazer; on: root.lighting
-                onToggled: { root.lighting = !root.lighting; backend.setSetting("lighting", root.lighting); if (root.lighting) { root.aligning = false; root.deselect(); root.enterLighting() } }
+                onToggled: { root.lighting = !root.lighting; backend.setSetting("lighting", root.lighting); if (root.lighting) { root.aligning = false; if (root.calibrating) root.exitCalibrate(); root.deselect(); root.enterLighting() } }
             }
-            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; if (root.aligning) root.lighting = false; root.deselect() } }
+            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; if (root.aligning) { root.lighting = false; if (root.calibrating) root.exitCalibrate() } root.deselect() } }
         }
     }
 
@@ -609,6 +890,14 @@ Rectangle {
                       ? " · " + root.conflictKeys.length + " share an output" : "")
                 color: root.conflictKeys.length > 0 ? root.amber : root.muted
             }
+            Text {   // honest health from the last apply: what's live, what got dropped
+                visible: root.applyHealth !== null && !root.lighting
+                anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12
+                text: root.applyHealth ? ("✓ " + root.applyHealth.live + " live"
+                      + (root.applyHealth.dropped > 0 ? " · ⚠ " + root.applyHealth.dropped + " dropped" : "")
+                      + (root.applyHealth.failed > 0 ? " · ✕ " + root.applyHealth.failed + " not applied" : "")) : ""
+                color: (root.applyHealth && (root.applyHealth.dropped > 0 || root.applyHealth.failed > 0)) ? root.amber : root.green
+            }
             Text { visible: !root.lighting; text: "Preset: " + backend.presetNameFor(root.curProfile); color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             Text { visible: root.lighting; text: "Lighting: " + root.lightLabel() + " · " + Math.round(root.lightBright) + "%"; color: root.green; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         }
@@ -619,7 +908,7 @@ Rectangle {
     Item {
         id: hintBar
         anchors { top: header.bottom; left: parent.left; right: parent.right }
-        height: (root.capSource === "default" && !root.hintDismissed) ? 34 : 0
+        height: (root.capSource === "default" && !root.hintDismissed && !root.calibrating && !backend.demo) ? 34 : 0
         visible: height > 0; clip: true
         Rectangle {
             anchors.fill: parent; color: root.alpha(root.amber, 0.13)
@@ -684,9 +973,40 @@ Rectangle {
             // empty state
             Column {
                 anchors { top: parent.top; topMargin: 60; horizontalCenter: parent.horizontalCenter }
-                spacing: 14; visible: !root.lighting && root.selKey === ""
+                spacing: 14; visible: !root.lighting && !root.calibrating && root.selKey === ""
                 Text { anchors.horizontalCenter: parent.horizontalCenter; text: "⊕"; color: root.green; font.pixelSize: 40; opacity: 0.6 }
                 Text { horizontalAlignment: Text.AlignHCenter; text: "Select a key on the device\nto map it."; color: root.muted2; font.pixelSize: 13; lineHeight: 1.4 }
+            }
+
+            // ---------- calibrate help (replaces the assign panel while calibrating) ----------
+            Column {
+                anchors { top: parent.top; left: parent.left; right: parent.right; topMargin: 54; leftMargin: 22; rightMargin: 22 }
+                spacing: 13; visible: root.calibrating
+                Row {
+                    spacing: 9
+                    PulseDot { width: 10; height: 10; color: root.amber; active: root.calibrating; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Calibrating"; color: root.txt; font.pixelSize: 16; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                }
+                Text { text: root.device ? root.device.name : root.curDev; color: root.amber; font.pixelSize: 13; font.bold: true }
+                Text {
+                    width: parent.width; wrapMode: Text.WordWrap; color: root.muted; font.pixelSize: 12; lineHeight: 1.4
+                    text: "Press each key on your hardware as it lights up amber. Every press is saved to your device map instantly."
+                }
+                Rectangle {   // progress bar
+                    width: parent.width; height: 8; radius: 4; color: root.alpha(root.amber, 0.14)
+                    Rectangle {
+                        height: parent.height; radius: 4; color: root.amber
+                        width: parent.width * (root.calBindable.length ? root.calDone / root.calBindable.length : 0)
+                    }
+                }
+                Text { text: root.calDone + " / " + root.calBindable.length + " keys set"
+                       color: root.amber; font.pixelSize: 12; font.bold: true }
+                Column {
+                    spacing: 6; topPadding: 6
+                    Text { text: "•  Click any key to jump to it"; color: root.muted2; font.pixelSize: 12 }
+                    Text { text: "•  Space — skip the current key"; color: root.muted2; font.pixelSize: 12 }
+                    Text { text: "•  Esc or Done — finish"; color: root.muted2; font.pixelSize: 12 }
+                }
             }
 
             // ---------- lighting inspector (canvas-native mode) ----------
@@ -989,6 +1309,96 @@ Rectangle {
                 }
             }
 
+            // Hypershift: layer selector + hold-key control (top-right of the stage)
+            Row {
+                anchors { top: parent.top; right: parent.right; margins: 14 }
+                z: 4; spacing: 8
+                visible: !root.aligning && !root.calibrating && !root.lighting
+                Rectangle {   // [ Base | Shift ] segmented
+                    width: segRow.implicitWidth + 6; height: 30; radius: 9
+                    color: root.panel2; border.width: 1; border.color: root.lineC
+                    anchors.verticalCenter: parent.verticalCenter
+                    Row {
+                        id: segRow; anchors.centerIn: parent; spacing: 3
+                        Repeater {
+                            model: [{ k: "base", t: "Base" }, { k: "shift", t: "Shift" }]
+                            Rectangle {
+                                property bool sel: root.bindLayer === modelData.k
+                                property bool isShift: modelData.k === "shift"
+                                width: segTxt.implicitWidth + 26; height: 24; radius: 6
+                                color: sel ? (isShift ? root.alpha(root.violet, 0.22) : root.greenDim) : "transparent"
+                                border.width: sel ? 1 : 0
+                                border.color: isShift ? root.violet : root.green
+                                Text {
+                                    id: segTxt; anchors.centerIn: parent; text: modelData.t
+                                    color: sel ? (isShift ? root.violet : root.greenTxt) : root.muted
+                                    font.pixelSize: 12; font.bold: true
+                                }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.setLayer(modelData.k) }
+                            }
+                        }
+                    }
+                }
+                Rectangle {   // hold-key control — only in the Shift layer
+                    visible: root.bindLayer === "shift"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: holdRow.implicitWidth + 18; height: 30; radius: 9
+                    color: root.pickingHoldKey ? root.alpha(root.violet, 0.22) : root.panel2
+                    border.width: 1; border.color: root.violet
+                    Row {
+                        id: holdRow; anchors.centerIn: parent; spacing: 7
+                        Text { anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 10; font.letterSpacing: 1; color: root.muted2; text: "HOLD" }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12; font.bold: true; color: root.violet
+                            text: root.pickingHoldKey ? "click a key…"
+                                : (root.holdKey ? root.holdKey.replace(/_/g, " ") : "set a key")
+                        }
+                    }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.pickingHoldKey = !root.pickingHoldKey }
+                }
+            }
+
+            // shift-layer banner — what this layer is, while it's active
+            Rectangle {
+                visible: root.bindLayer === "shift" && !root.aligning && !root.calibrating && !root.lighting
+                anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 14 }
+                z: 3
+                width: shiftRow.implicitWidth + 26; height: 34; radius: 10
+                color: Qt.rgba(0.07, 0.065, 0.1, 0.94); border.width: 1; border.color: root.violet
+                Row {
+                    id: shiftRow; anchors.centerIn: parent; spacing: 9
+                    Text { text: "⇧ SHIFT LAYER"; color: root.violet; font.pixelSize: 11; font.bold: true; font.letterSpacing: 1; anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12; color: "#d9d2ff"
+                        text: root.holdKey ? ("fires while you hold " + root.holdKey.replace(/_/g, " "))
+                                           : "set a hold key, then bind the second layer"
+                    }
+                }
+            }
+
+            // profile-diff legend — colour key while comparing (drops below the shift banner if both show)
+            Rectangle {
+                visible: root.compareProfile !== "" && root.compareProfile !== root.curProfile
+                         && !root.aligning && !root.calibrating && !root.lighting
+                anchors { top: parent.top; horizontalCenter: parent.horizontalCenter
+                          topMargin: root.bindLayer === "shift" ? 56 : 14 }
+                z: 3
+                width: cmpLegend.implicitWidth + 26; height: 34; radius: 10
+                color: Qt.rgba(0.05, 0.07, 0.086, 0.94); border.width: 1; border.color: root.cyan
+                Row {
+                    id: cmpLegend; anchors.centerIn: parent; spacing: 13
+                    Text { text: "vs " + root.compareProfile; color: "#bfe9fb"; font.pixelSize: 12; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                    Repeater {
+                        model: [{ c: root.amber, t: "changed" }, { c: root.cyan, t: "only here" }, { c: root.violet, t: "only there" }]
+                        Row {
+                            spacing: 5; anchors.verticalCenter: parent.verticalCenter
+                            Rectangle { width: 8; height: 8; radius: 2; color: modelData.c; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: modelData.t; color: root.muted2; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                        }
+                    }
+                }
+            }
+
             // align bar
             Rectangle {
                 visible: root.aligning
@@ -1003,6 +1413,47 @@ Rectangle {
                         width: copyTxt.implicitWidth + 22; height: 26; radius: 7; color: "#1d7fa6"; border.width: 1; border.color: root.cyan; anchors.verticalCenter: parent.verticalCenter
                         Text { id: copyTxt; anchors.centerIn: parent; text: "Copy layout"; color: "#eafaff"; font.pixelSize: 12; font.bold: true }
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.copyLayout() }
+                    }
+                }
+            }
+
+            // calibrate bar — amber "recording" banner: instruction + progress + Done
+            Rectangle {
+                visible: root.calibrating
+                anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 14 }
+                z: 4
+                width: calRow.implicitWidth + 28; height: 40; radius: 11
+                color: Qt.rgba(0.08, 0.06, 0.03, 0.95); border.width: 1; border.color: root.amber
+                Rectangle {   // soft amber halo so it reads as "live/recording"
+                    anchors.fill: parent; anchors.margins: -6; radius: 16; z: -1
+                    color: root.alpha(root.amber, 0.06 + 0.05 * root.pulse)
+                }
+                Row {
+                    id: calRow; anchors.centerIn: parent; spacing: 13
+                    PulseDot { width: 9; height: 9; color: root.amber; active: root.calibrating; anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.calBindable.length === 0 ? "Nothing to calibrate on this device"
+                            : root.armedKey !== "" ? "Press the highlighted key on your device"
+                            : (root.calDone >= root.calBindable.length ? "All keys set — press Done"
+                               : "Click a key to calibrate it")
+                        color: "#ffe6b8"; font.pixelSize: 12; font.bold: true
+                    }
+                    Rectangle { visible: root.calBindable.length > 0; width: 1; height: 18; color: root.alpha(root.amber, 0.4); anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        visible: root.calBindable.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.calDone + " / " + root.calBindable.length
+                        color: root.amber; font.pixelSize: 12; font.bold: true
+                    }
+                    Rectangle {   // Done
+                        width: calDoneTxt.implicitWidth + 22; height: 26; radius: 7
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: calDoneMa.containsMouse ? root.amber : root.alpha(root.amber, 0.18)
+                        border.width: 1; border.color: root.amber
+                        Text { id: calDoneTxt; anchors.centerIn: parent; text: "Done"
+                               color: calDoneMa.containsMouse ? "#1a1306" : root.amber; font.pixelSize: 12; font.bold: true }
+                        MouseArea { id: calDoneMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.exitCalibrate() }
                     }
                 }
             }
@@ -1031,6 +1482,11 @@ Rectangle {
                         color: "transparent"; radius: 14
                         border.width: 2; border.color: root.line2
                     }
+                    Rectangle {   // calibrate focus scrim — mute the device's own RGB so
+                        anchors.fill: parent          // the amber/green capture state reads clearly
+                        visible: root.calibrating; radius: 8
+                        color: Qt.rgba(0, 0, 0, 0.5)
+                    }
                     Repeater {
                         model: root.viewObj ? root.viewObj.keys : []
                         Hotspot {
@@ -1040,6 +1496,12 @@ Rectangle {
                             selected: root.selKey === modelData.id
                             conflict: root.conflictKeys.indexOf(modelData.id) >= 0
                             unavailable: modelData.unavailable || ""
+                            calibrating: root.calibrating
+                            captured: root.calibrating && root.capturedIds.indexOf(modelData.id) >= 0
+                            armed: root.armedKey === modelData.id
+                            combo: modelData.combo ? true : false
+                            isHold: root.bindLayer === "shift" && root.holdKey === modelData.id
+                            diff: root.diffState(modelData.id)
                         }
                     }
                 }
@@ -1161,7 +1623,8 @@ Rectangle {
             else r = { ok: false, error: "?" }
             if (r.ok) {
                 root.syncProfile(); visible = false
-                root.applyActiveProfile()   // the new active profile becomes live immediately
+                if (root.calibrating) root.exitCalibrate()   // a profile change ends calibration (and re-applies)
+                else root.applyActiveProfile()               // the new active profile becomes live immediately
             } else { error = r.error }
         }
         Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.55)
@@ -1292,5 +1755,6 @@ Rectangle {
     }
 
     // Escape to deselect
-    Shortcut { sequence: "Escape"; onActivated: if (!root.listening) root.deselect() }
+    Shortcut { sequence: "Escape"; onActivated: { if (root.calibrating) root.exitCalibrate(); else if (!root.listening) root.deselect() } }
+    Shortcut { sequence: "Space"; enabled: root.calibrating; onActivated: root.skipArmed() }
 }

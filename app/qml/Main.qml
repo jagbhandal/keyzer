@@ -135,6 +135,17 @@ Rectangle {
     property bool qaLive: false              // offscreen QA: force the LIVE pill visible
     property string capSource: "none"        // 'user' | 'default' | 'none' — drives the calibrate hint
     property bool hintDismissed: false
+    // ---- live in-app calibration ----
+    property bool calibrating: false         // calibrate mode active
+    property string armedKey: ""             // hotspot awaiting a physical press (pulses)
+    property var capturedIds: []             // hotspots the user has captured (this device)
+    property var calBindable: []             // hotspots that need a code, in walk order
+    readonly property int calDone: {         // captured keys that actually need calibrating
+        var n = 0
+        for (var i = 0; i < calBindable.length; i++)
+            if (capturedIds.indexOf(calBindable[i]) >= 0) n++
+        return n
+    }
 
     // ---------- derived ----------
     readonly property var device: backend.layouts[curDev]
@@ -161,7 +172,15 @@ Rectangle {
     function firstView(dev) { return backend.viewNames(dev)[0] }
     function selectKey(id) { selKey = id; capValue = ""; listening = false }
     function deselect() { selKey = ""; capValue = ""; listening = false }
-    function switchDevice(dev) { curDev = dev; curView = firstView(dev); deselect(); syncLightDevice() }
+    function switchDevice(dev) {
+        if (root.calibrating && dev !== curDev) {   // follow calibration to the new device
+            backend.endCalibration()
+            curDev = dev; curView = firstView(dev); deselect(); syncLightDevice()
+            if (!enterCalibrate()) { root.calibrating = false; applyActiveProfile() }   // restore binds on failure
+            return
+        }
+        curDev = dev; curView = firstView(dev); deselect(); syncLightDevice()
+    }
     function markDirty() { dirtyText = "● Unsaved → autosaving…"; dirtyTimer.restart() }
     function showToast(m) { toast.msg = m; toast.show() }
     function curBinding() { return bindMap[selKey] !== undefined ? bindMap[selKey] : "" }
@@ -222,6 +241,40 @@ Rectangle {
         var r = backend.stopAll()
         showToast(r.ok ? "Remapping stopped — devices back to default" : (r.error || "Stop failed"))
     }
+    // ---- in-app calibration: click a key, press it, it locks in ----
+    function refreshCaptured() { root.capturedIds = backend.capturedIds(root.curDev) }
+    function armKey(id) {
+        if (!root.calibrating) return
+        if (root.calBindable.indexOf(id) < 0) return   // combos / unavailable can't be calibrated
+        root.armedKey = id; backend.armCalibration(id)
+    }
+    function armFrom(start) {   // arm the first uncaptured bindable at/after `start`
+        for (var i = start; i < root.calBindable.length; i++)
+            if (root.capturedIds.indexOf(root.calBindable[i]) < 0) { root.armKey(root.calBindable[i]); return true }
+        return false
+    }
+    function armNextUncaptured() { if (!armFrom(0)) { root.armedKey = ""; backend.disarmCalibration() } }
+    function skipArmed() {
+        var start = root.armedKey === "" ? 0 : root.calBindable.indexOf(root.armedKey) + 1
+        if (!armFrom(start)) armNextUncaptured()   // none after — wrap to any remaining
+    }
+    function enterCalibrate() {
+        var r = backend.beginCalibration(root.curDev)
+        if (!r.ok) { showToast(r.error); return false }
+        root.aligning = false; root.lighting = false; root.deselect()
+        root.calBindable = backend.bindableIds(root.curDev)
+        root.calibrating = true
+        refreshCaptured()
+        armNextUncaptured()
+        return true
+    }
+    function exitCalibrate() {
+        backend.endCalibration()
+        root.calibrating = false; root.armedKey = ""
+        root.capSummary = backend.captureSummary(); root.capSource = backend.capturesSource()
+        applyActiveProfile()   // restore live binds (calibration had stopped them)
+    }
+    function toggleCalibrate() { if (root.calibrating) exitCalibrate(); else enterCalibrate() }
     // Keys that are modifiers on their own — a lone press of one isn't a binding.
     readonly property var modifierKeys: [Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
                                          Qt.Key_Super_L, Qt.Key_Super_R, Qt.Key_AltGr]
@@ -275,6 +328,12 @@ Rectangle {
         if (q.KEYZER_LIVE) qaLive = true
         if (q.KEYZER_HINT) capSource = "default"
         if (q.KEYZER_LIGHTPANEL) root.openLightingDemo()
+        if (q.KEYZER_CALIBRATE === "1") {   // QA: render calibrate mode without a live capture session
+            root.calBindable = backend.bindableIds(root.curDev)
+            root.capturedIds = root.calBindable.slice(0, 5)   // a few already set
+            root.armedKey = root.calBindable.length > 5 ? root.calBindable[5] : ""
+            root.calibrating = true
+        }
         // restore the lighting view-mode across restarts (persisted pref)
         if (backend.getSetting("lighting", false) === true && !root.lighting) { root.lighting = true; root.enterLighting() }
     }
@@ -292,6 +351,18 @@ Rectangle {
         }
     }
     Timer { running: root.lighting; interval: 220; repeat: true; onTriggered: root.litStep++ }
+
+    // live calibration: each physical press the worker captures lands here
+    Connections {
+        target: backend
+        function onKeyCaptured(dev, hotspot, label) {
+            if (!root.calibrating || dev !== root.curDev) return
+            root.refreshCaptured()
+            root.showToast("Got it — " + hotspot.replace(/_/g, " ") + (label ? "  (" + label + ")" : ""))
+            root.armNextUncaptured()
+        }
+        function onCalibrationError(msg) { root.showToast("Calibrate — " + msg) }
+    }
 
     // ================= ambient backdrop (neon) =================
     // a quiet vertical wash + a faint green floor-glow so the whole surface
@@ -314,6 +385,19 @@ Rectangle {
     }
 
     // ================= inline components =================
+    component PulseDot: Rectangle {   // a small breathing status dot (live/recording)
+        id: pd
+        property bool active: true
+        property real lo: 0.3
+        property int half: 600
+        radius: width / 2
+        SequentialAnimation on opacity {
+            running: pd.active; loops: Animation.Infinite
+            NumberAnimation { to: pd.lo; duration: pd.half }
+            NumberAnimation { to: 1.0; duration: pd.half }
+        }
+    }
+
     component FlatSwitch: Item {
         id: sw
         property bool on: false
@@ -363,6 +447,10 @@ Rectangle {
         property bool conflict: false
         property string unavailable: ""
         property int litIndex: 0
+        property bool calibrating: false   // calibrate mode on
+        property bool captured: false      // user has a recorded code for this key
+        property bool armed: false         // awaiting a press for this key right now
+        property bool combo: false         // derived 8-way diagonal — not directly captured
         width: k.w; height: k.h
         opacity: hs.unavailable !== "" ? 0.45 : 1
         Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
@@ -397,20 +485,50 @@ Rectangle {
             border.width: 1
             border.color: root.alpha(root.greenHot, 0.5 + 0.4 * root.pulse)
         }
+        // ---- calibrate states: armed (press it now) is the one bold moment ----
+        Rectangle {   // armed bloom
+            visible: hs.armed
+            anchors.fill: parent; anchors.margins: -16; radius: 22
+            color: root.alpha(root.amber, 0.10 + 0.10 * root.pulse)
+        }
+        Rectangle {   // armed ring — pulsing amber "press it"
+            visible: hs.armed
+            anchors.fill: parent; radius: 9
+            color: root.alpha(root.amber, 0.14 + 0.08 * root.pulse)
+            border.width: 2; border.color: root.alpha(root.amber, 0.6 + 0.4 * root.pulse)
+        }
+        Rectangle {   // captured ✓ — quiet green confirmation
+            visible: hs.calibrating && hs.captured && !hs.armed
+            anchors.fill: parent; radius: 9
+            color: root.alpha(root.green, 0.07)
+            border.width: 1.5; border.color: root.alpha(root.green, 0.55)
+        }
+        Rectangle {   // still-to-do — a faint outline so the work left is legible, not loud
+            visible: hs.calibrating && !hs.captured && !hs.armed && !hs.combo && hs.unavailable === ""
+            anchors.fill: parent; radius: 9
+            color: "transparent"
+            border.width: 1; border.color: root.alpha(root.muted2, 0.45)
+        }
         Rectangle {
             id: pill
-            visible: hs.binding !== "" || hs.selected || hs.unavailable !== ""
+            visible: hs.calibrating ? (hs.armed || hs.captured || hs.unavailable !== "")
+                                    : (hs.binding !== "" || hs.selected || hs.unavailable !== "")
             anchors.centerIn: parent
             width: Math.max(26, pillTxt.implicitWidth + 14); height: 24; radius: 6
             color: Qt.rgba(0.03, 0.035, 0.024, 0.86)
             border.width: hs.selected ? 1.5 : 1
             border.color: hs.unavailable !== "" ? root.line2
+                        : hs.calibrating ? (hs.armed ? root.amber : root.green)
                         : hs.conflict ? root.amber
                         : hs.selected ? root.greenHot : root.alpha(root.green, 0.45)
             Text {
                 id: pillTxt; anchors.centerIn: parent
-                text: hs.unavailable !== "" ? "n/a" : (hs.binding !== "" ? hs.binding : (hs.selected ? "·" : ""))
-                color: hs.unavailable !== "" ? root.muted2 : (hs.conflict ? root.amber : (hs.selected ? root.greenHot : root.green))
+                text: hs.unavailable !== "" ? "n/a"
+                    : hs.calibrating ? (hs.armed ? "●" : hs.captured ? "✓" : "")
+                    : (hs.binding !== "" ? hs.binding : (hs.selected ? "·" : ""))
+                color: hs.unavailable !== "" ? root.muted2
+                     : hs.calibrating ? (hs.armed ? root.amber : root.green)
+                     : hs.conflict ? root.amber : (hs.selected ? root.greenHot : root.green)
                 font.pixelSize: 14; font.bold: true
             }
         }
@@ -423,7 +541,13 @@ Rectangle {
             border.color: root.glowColor()   // the real applied colour/effect, not a fake rainbow
         }
         HoverHandler { id: hov; cursorShape: root.aligning ? Qt.SizeAllCursor : Qt.PointingHandCursor }
-        TapHandler { enabled: !root.aligning && !root.lighting; onTapped: hs.unavailable !== "" ? root.showToast(hs.unavailable) : root.selectKey(hs.k.id) }
+        TapHandler {
+            enabled: !root.aligning && !root.lighting
+            onTapped: hs.unavailable !== "" ? root.showToast(hs.unavailable)
+                    : root.calibrating ? (hs.combo ? root.showToast("8-way diagonals are set from their two keys — no need to calibrate")
+                                                   : root.armKey(hs.k.id))
+                    : root.selectKey(hs.k.id)
+        }
         DragHandler { enabled: root.aligning; target: hs; onActiveChanged: if (!active) root.setCoord(hs.k.id, hs.x, hs.y) }
     }
 
@@ -524,7 +648,7 @@ Rectangle {
                             model: backend.profileList
                             MenuItem {
                                 text: (modelData === root.curProfile ? "●  " : "      ") + modelData
-                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile(); root.applyActiveProfile() }
+                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile(); if (root.calibrating) root.exitCalibrate(); else root.applyActiveProfile() }
                             }
                         }
                         MenuSeparator {}
@@ -553,14 +677,10 @@ Rectangle {
                 }
                 Row {
                     id: liveRow; anchors.centerIn: parent; spacing: 7
-                    Rectangle {
-                        width: 8; height: 8; radius: 4; anchors.verticalCenter: parent.verticalCenter
+                    PulseDot {
+                        width: 8; height: 8; anchors.verticalCenter: parent.verticalCenter
                         color: lpMa.containsMouse ? root.danger : root.green
-                        SequentialAnimation on opacity {
-                            running: livePill.visible; loops: Animation.Infinite
-                            NumberAnimation { to: 0.35; duration: 700 }
-                            NumberAnimation { to: 1.0; duration: 700 }
-                        }
+                        active: livePill.visible; lo: 0.35; half: 700
                     }
                     Text {
                         anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 11; font.bold: true; font.letterSpacing: 1
@@ -571,11 +691,17 @@ Rectangle {
                 MouseArea { id: lpMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.stopHardware() }
             }
             FlatSwitch {
+                anchors.verticalCenter: parent.verticalCenter; label: "CALIBRATE"
+                enabled: backend.deps.inputRemapper; on: root.calibrating
+                accent: root.alpha(root.amber, 0.5); accentBorder: root.amber
+                onToggled: root.toggleCalibrate()
+            }
+            FlatSwitch {
                 anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"
                 enabled: backend.deps.openrazer; on: root.lighting
-                onToggled: { root.lighting = !root.lighting; backend.setSetting("lighting", root.lighting); if (root.lighting) { root.aligning = false; root.deselect(); root.enterLighting() } }
+                onToggled: { root.lighting = !root.lighting; backend.setSetting("lighting", root.lighting); if (root.lighting) { root.aligning = false; if (root.calibrating) root.exitCalibrate(); root.deselect(); root.enterLighting() } }
             }
-            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; if (root.aligning) root.lighting = false; root.deselect() } }
+            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; if (root.aligning) { root.lighting = false; if (root.calibrating) root.exitCalibrate() } root.deselect() } }
         }
     }
 
@@ -619,7 +745,7 @@ Rectangle {
     Item {
         id: hintBar
         anchors { top: header.bottom; left: parent.left; right: parent.right }
-        height: (root.capSource === "default" && !root.hintDismissed) ? 34 : 0
+        height: (root.capSource === "default" && !root.hintDismissed && !root.calibrating) ? 34 : 0
         visible: height > 0; clip: true
         Rectangle {
             anchors.fill: parent; color: root.alpha(root.amber, 0.13)
@@ -684,9 +810,40 @@ Rectangle {
             // empty state
             Column {
                 anchors { top: parent.top; topMargin: 60; horizontalCenter: parent.horizontalCenter }
-                spacing: 14; visible: !root.lighting && root.selKey === ""
+                spacing: 14; visible: !root.lighting && !root.calibrating && root.selKey === ""
                 Text { anchors.horizontalCenter: parent.horizontalCenter; text: "⊕"; color: root.green; font.pixelSize: 40; opacity: 0.6 }
                 Text { horizontalAlignment: Text.AlignHCenter; text: "Select a key on the device\nto map it."; color: root.muted2; font.pixelSize: 13; lineHeight: 1.4 }
+            }
+
+            // ---------- calibrate help (replaces the assign panel while calibrating) ----------
+            Column {
+                anchors { top: parent.top; left: parent.left; right: parent.right; topMargin: 54; leftMargin: 22; rightMargin: 22 }
+                spacing: 13; visible: root.calibrating
+                Row {
+                    spacing: 9
+                    PulseDot { width: 10; height: 10; color: root.amber; active: root.calibrating; anchors.verticalCenter: parent.verticalCenter }
+                    Text { text: "Calibrating"; color: root.txt; font.pixelSize: 16; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                }
+                Text { text: root.device ? root.device.name : root.curDev; color: root.amber; font.pixelSize: 13; font.bold: true }
+                Text {
+                    width: parent.width; wrapMode: Text.WordWrap; color: root.muted; font.pixelSize: 12; lineHeight: 1.4
+                    text: "Press each key on your hardware as it lights up amber. Every press is saved to your device map instantly."
+                }
+                Rectangle {   // progress bar
+                    width: parent.width; height: 8; radius: 4; color: root.alpha(root.amber, 0.14)
+                    Rectangle {
+                        height: parent.height; radius: 4; color: root.amber
+                        width: parent.width * (root.calBindable.length ? root.calDone / root.calBindable.length : 0)
+                    }
+                }
+                Text { text: root.calDone + " / " + root.calBindable.length + " keys set"
+                       color: root.amber; font.pixelSize: 12; font.bold: true }
+                Column {
+                    spacing: 6; topPadding: 6
+                    Text { text: "•  Click any key to jump to it"; color: root.muted2; font.pixelSize: 12 }
+                    Text { text: "•  Space — skip the current key"; color: root.muted2; font.pixelSize: 12 }
+                    Text { text: "•  Esc or Done — finish"; color: root.muted2; font.pixelSize: 12 }
+                }
             }
 
             // ---------- lighting inspector (canvas-native mode) ----------
@@ -1007,6 +1164,47 @@ Rectangle {
                 }
             }
 
+            // calibrate bar — amber "recording" banner: instruction + progress + Done
+            Rectangle {
+                visible: root.calibrating
+                anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 14 }
+                z: 4
+                width: calRow.implicitWidth + 28; height: 40; radius: 11
+                color: Qt.rgba(0.08, 0.06, 0.03, 0.95); border.width: 1; border.color: root.amber
+                Rectangle {   // soft amber halo so it reads as "live/recording"
+                    anchors.fill: parent; anchors.margins: -6; radius: 16; z: -1
+                    color: root.alpha(root.amber, 0.06 + 0.05 * root.pulse)
+                }
+                Row {
+                    id: calRow; anchors.centerIn: parent; spacing: 13
+                    PulseDot { width: 9; height: 9; color: root.amber; active: root.calibrating; anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.calBindable.length === 0 ? "Nothing to calibrate on this device"
+                            : root.armedKey !== "" ? "Press the highlighted key on your device"
+                            : (root.calDone >= root.calBindable.length ? "All keys set — press Done"
+                               : "Click a key to calibrate it")
+                        color: "#ffe6b8"; font.pixelSize: 12; font.bold: true
+                    }
+                    Rectangle { visible: root.calBindable.length > 0; width: 1; height: 18; color: root.alpha(root.amber, 0.4); anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        visible: root.calBindable.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: root.calDone + " / " + root.calBindable.length
+                        color: root.amber; font.pixelSize: 12; font.bold: true
+                    }
+                    Rectangle {   // Done
+                        width: calDoneTxt.implicitWidth + 22; height: 26; radius: 7
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: calDoneMa.containsMouse ? root.amber : root.alpha(root.amber, 0.18)
+                        border.width: 1; border.color: root.amber
+                        Text { id: calDoneTxt; anchors.centerIn: parent; text: "Done"
+                               color: calDoneMa.containsMouse ? "#1a1306" : root.amber; font.pixelSize: 12; font.bold: true }
+                        MouseArea { id: calDoneMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.exitCalibrate() }
+                    }
+                }
+            }
+
             // device + hotspots
             Item {
                 id: devHolder
@@ -1031,6 +1229,11 @@ Rectangle {
                         color: "transparent"; radius: 14
                         border.width: 2; border.color: root.line2
                     }
+                    Rectangle {   // calibrate focus scrim — mute the device's own RGB so
+                        anchors.fill: parent          // the amber/green capture state reads clearly
+                        visible: root.calibrating; radius: 8
+                        color: Qt.rgba(0, 0, 0, 0.5)
+                    }
                     Repeater {
                         model: root.viewObj ? root.viewObj.keys : []
                         Hotspot {
@@ -1040,6 +1243,10 @@ Rectangle {
                             selected: root.selKey === modelData.id
                             conflict: root.conflictKeys.indexOf(modelData.id) >= 0
                             unavailable: modelData.unavailable || ""
+                            calibrating: root.calibrating
+                            captured: root.calibrating && root.capturedIds.indexOf(modelData.id) >= 0
+                            armed: root.armedKey === modelData.id
+                            combo: modelData.combo ? true : false
                         }
                     }
                 }
@@ -1161,7 +1368,8 @@ Rectangle {
             else r = { ok: false, error: "?" }
             if (r.ok) {
                 root.syncProfile(); visible = false
-                root.applyActiveProfile()   // the new active profile becomes live immediately
+                if (root.calibrating) root.exitCalibrate()   // a profile change ends calibration (and re-applies)
+                else root.applyActiveProfile()               // the new active profile becomes live immediately
             } else { error = r.error }
         }
         Rectangle { anchors.fill: parent; color: Qt.rgba(0, 0, 0, 0.55)
@@ -1292,5 +1500,6 @@ Rectangle {
     }
 
     // Escape to deselect
-    Shortcut { sequence: "Escape"; onActivated: if (!root.listening) root.deselect() }
+    Shortcut { sequence: "Escape"; onActivated: { if (root.calibrating) root.exitCalibrate(); else if (!root.listening) root.deselect() } }
+    Shortcut { sequence: "Space"; enabled: root.calibrating; onActivated: root.skipArmed() }
 }

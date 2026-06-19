@@ -37,6 +37,9 @@ def main() -> int:
 
     view = QQuickView()
     backend = Backend()
+    # On quit, cleanly stop any in-progress calibration so its worker thread ungrabs
+    # the device and isn't torn down mid-run (avoids a 'QThread destroyed' abort).
+    app.aboutToQuit.connect(backend.shutdownCalibration)
     view.rootContext().setContextProperty("backend", backend)
     view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
     view.setColor("#0b0b0e")

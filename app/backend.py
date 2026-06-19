@@ -12,15 +12,99 @@ import importlib.util
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, Signal, Slot
+from PySide6.QtCore import Property, QObject, QThread, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 import engine
 import lighting
 
 REPO = Path(__file__).resolve().parent.parent
+
+
+class _CaptureWorker(QThread):
+    """Reads physical presses off one grabbed device on a background thread, one
+    'armed' hotspot at a time, and persists + reports each capture. Lives only for
+    the duration of an in-app calibration session. evdev reads block, so they must
+    not run on the GUI thread."""
+    captured = Signal(str, str, str)   # dev_id, hotspot, human label
+    failed = Signal(str)
+
+    def __init__(self, dev_id, nodes, device_name, usb, all_names, parent=None):
+        super().__init__(parent)
+        self._dev_id = dev_id
+        self._nodes = nodes
+        self._device_name = device_name
+        self._usb = usb
+        self._all_names = all_names
+        self._armed = None     # hotspot id awaiting a press, or None (idle)
+        self._stop = False
+        self._lock = threading.Lock()   # guards _armed across GUI/worker threads
+
+    def arm(self, hotspot: str) -> None:
+        with self._lock:
+            self._armed = hotspot
+
+    def disarm(self) -> None:
+        with self._lock:
+            self._armed = None
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def _claim(self, hotspot: str) -> bool:
+        """Clear the armed slot iff it's still this hotspot, so a press is recorded
+        only for the key that was armed when it arrived (a re-arm mid-read wins)."""
+        with self._lock:
+            if self._armed == hotspot:
+                self._armed = None
+                return True
+            return False
+
+    def run(self) -> None:
+        import capture   # already imported by beginCalibration; cache hit here
+        grabbed = []
+        try:
+            for d in self._nodes:
+                try:
+                    d.grab()
+                    grabbed.append(d)
+                except OSError:
+                    pass   # another program holds it; reads still work without a grab
+            while not self._stop:
+                with self._lock:
+                    hotspot = self._armed
+                if hotspot is None:
+                    self.msleep(40)
+                    continue
+                payload = capture.next_press(self._nodes, timeout=0.2)
+                if self._stop:
+                    break
+                if payload is None or not self._claim(hotspot):
+                    continue   # timed out, or re-armed elsewhere meanwhile — discard
+                try:
+                    engine.record_capture(self._dev_id, self._device_name, hotspot,
+                                          capture.capture_entry(payload),
+                                          usb=self._usb, all_names=self._all_names)
+                except OSError as exc:
+                    self.failed.emit(f"couldn't save capture: {exc}")
+                    continue
+                self.captured.emit(self._dev_id, hotspot, payload.get("name", ""))
+        except Exception as exc:   # a worker crash must never take down the app
+            self.failed.emit(str(exc))
+        finally:
+            for d in grabbed:
+                try:
+                    d.ungrab()
+                except OSError:
+                    pass
+            for d in self._nodes:
+                try:
+                    d.close()
+                except OSError:
+                    pass
 
 
 def _detect_deps() -> dict:
@@ -88,6 +172,9 @@ class Backend(QObject):
     bindingsChanged = Signal()
     profilesChanged = Signal()
     liveChanged = Signal()
+    keyCaptured = Signal(str, str, str)   # in-app calibration: dev, hotspot, label
+    calibrationChanged = Signal()         # a calibration session started/ended
+    calibrationError = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -108,6 +195,8 @@ class Backend(QObject):
                              for dev, lay in self._layouts.items()}
         self._deps = _detect_deps()
         self._live = {}     # dev -> profile currently injected (KEYZER-tracked; daemon can't report it)
+        self._cal_worker = None   # active _CaptureWorker during in-app calibration, else None
+        self._cal_dev = ""
         self._load_profiles()
 
     def _load_profiles(self) -> None:
@@ -316,6 +405,113 @@ class Backend(QObject):
         """'user' (you ran capture.py), 'default' (bundled map), or 'none'."""
         return engine.captures_origin()
 
+    # ----- in-app calibration (live evdev capture) -----
+    @Slot(result=bool)
+    def calibrating(self) -> bool:
+        return self._cal_worker is not None
+
+    @Slot(str, result="QVariant")
+    def beginCalibration(self, dev: str) -> dict:
+        """Open + grab ``dev`` for live capture. Stops input-remapper first so its
+        exclusive grab doesn't starve our reads; re-apply the profile on exit (the
+        UI does this). Returns {ok, device} or {ok:False, error} for the fallback."""
+        if dev not in self._layouts:
+            return {"ok": False, "error": "Unknown device"}
+        if self._cal_worker is not None:
+            return {"ok": False, "error": "Already calibrating"}
+        try:
+            import capture
+        except (ImportError, SystemExit):
+            return {"ok": False, "error": "python-evdev isn't installed — see capture.py setup"}
+        name, nodes = capture.open_nodes(self._layouts[dev])
+        if not nodes:
+            return {"ok": False,
+                    "error": "Device not found or /dev/input isn't readable — plug it in, "
+                             "or add yourself to the 'input' group and log back in."}
+        try:
+            worker = _CaptureWorker(dev, nodes, name, self._layouts[dev].get("usb", ""),
+                                    sorted({d.name for d in nodes}), parent=self)  # parented: no GC mid-run
+            worker.captured.connect(self._on_captured)
+            worker.failed.connect(self.calibrationError)
+            worker.finished.connect(worker.deleteLater)
+            # Only now (device open, worker built): free it from input-remapper so our
+            # reads aren't starved. After the guard, so a failed begin never disturbs
+            # the user's live remapping.
+            if engine.available():
+                engine.stop_all()
+            self._live = {}        # remapping is now stopped — keep the LIVE pill honest
+            self.liveChanged.emit()
+            worker.start()
+        except Exception as exc:   # something failed before the worker owns the nodes —
+            for d in nodes:        # close them here, since the worker's finally never runs
+                try:
+                    d.close()
+                except OSError:
+                    pass
+            return {"ok": False, "error": f"Couldn't start calibration: {exc}"}
+        self._cal_worker = worker
+        self._cal_dev = dev
+        self.calibrationChanged.emit()
+        return {"ok": True, "device": name}
+
+    @Slot(str)
+    def armCalibration(self, hotspot: str) -> None:
+        """Wait for the next physical press and bind it to ``hotspot``."""
+        if self._cal_worker is not None:
+            self._cal_worker.arm(hotspot)
+
+    @Slot()
+    def disarmCalibration(self) -> None:
+        if self._cal_worker is not None:
+            self._cal_worker.disarm()
+
+    @Slot(result="QVariant")
+    def endCalibration(self) -> dict:
+        """Stop the session and release the device (ungrab happens in the worker's
+        finally). The worker is parented to this Backend, so even the pathological
+        case where wait() times out can't GC a still-running QThread (no crash)."""
+        worker = self._cal_worker
+        self._cal_dev = ""
+        if worker is not None:
+            worker.stop()
+            worker.wait(3000)   # the read loop polls _stop every 0.2s, so this returns fast
+            self._cal_worker = None
+        self.calibrationChanged.emit()
+        return {"ok": True}
+
+    @Slot()
+    def shutdownCalibration(self) -> None:
+        """App is quitting — stop any worker so it ungrabs the device and the thread
+        isn't torn down mid-run. Wired to QGuiApplication.aboutToQuit in main.py."""
+        if self._cal_worker is not None:
+            self.endCalibration()
+
+    def _on_captured(self, dev: str, hotspot: str, label: str) -> None:
+        # runs on the GUI thread (queued cross-thread signal); the worker already
+        # persisted the entry, so just notify the UI to refresh + glow the hotspot.
+        self.keyCaptured.emit(dev, hotspot, label)
+
+    @Slot(str, result="QVariant")
+    def bindableIds(self, dev: str) -> list:
+        """Hotspots that need a captured evdev code — real keys, not derived combos
+        or controls with no Linux event. Order follows the layout (views, keys),
+        which is the order calibration walks through."""
+        out = []
+        for view in self._layouts.get(dev, {}).get("views", {}).values():
+            for k in view["keys"]:
+                if not (k.get("combo") or k.get("unavailable")):
+                    out.append(k["id"])
+        return out
+
+    @Slot(str, result="QVariant")
+    def capturedIds(self, dev: str) -> list:
+        """Hotspots the user has personally captured. The bundled default map is
+        ignored here on purpose — calibration is about recording *your* device, so
+        a fresh user sees every key as still-to-do, not pre-filled by the default."""
+        data = engine.load_json(engine.CAPTURES, {})
+        cap = data.get(dev) if isinstance(data, dict) else None
+        return list((cap.get("captured") or {}).keys()) if isinstance(cap, dict) else []
+
     @Slot(str, str, result="QVariant")
     def applyToHardware(self, profile: str, dev: str = "") -> dict:
         """Generate + load an input-remapper preset for the profile — all devices,
@@ -419,5 +615,5 @@ class Backend(QObject):
         names = ("KEYZER_DEV", "KEYZER_VIEW", "KEYZER_PROFILE", "KEYZER_SELECT",
                  "KEYZER_LIGHTING", "KEYZER_ALIGN", "KEYZER_RESULT",
                  "KEYZER_DIALOG", "KEYZER_LIVE", "KEYZER_LIGHTPANEL", "KEYZER_HINT",
-                 "KEYZER_LISTEN")
+                 "KEYZER_LISTEN", "KEYZER_CALIBRATE")
         return {n: os.environ.get(n, "") for n in names}

@@ -482,5 +482,59 @@ class PersistenceTests(_IsolatedBackendTest):
         self.assertEqual(r["devices"], [])
 
 
+class CalibrationTests(_IsolatedBackendTest):
+    """Orchestration guards for in-app calibration. The live evdev/thread flow
+    needs hardware, so only the device-independent guard paths are unit-tested;
+    classify_event + record_capture cover the data logic elsewhere."""
+
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+
+    def test_begin_unknown_device_rejected(self):
+        r = self.b.beginCalibration("ghost")
+        self.assertFalse(r["ok"])
+        self.assertIn("unknown", r["error"].lower())
+        self.assertFalse(self.b.calibrating())
+
+    def test_begin_rejected_when_already_calibrating(self):
+        self.b._cal_worker = object()      # pretend a session is active
+        try:
+            r = self.b.beginCalibration("tartarus")
+        finally:
+            self.b._cal_worker = None
+        self.assertFalse(r["ok"])
+        self.assertIn("already", r["error"].lower())
+
+    def test_end_without_session_is_safe(self):
+        self.assertEqual(self.b.endCalibration(), {"ok": True})
+        self.assertFalse(self.b.calibrating())
+
+    def test_arm_disarm_without_session_are_noops(self):
+        self.b.armCalibration("TAR_01")    # must not raise with no worker
+        self.b.disarmCalibration()
+
+    def test_begin_failure_does_not_stop_remapping(self):
+        # A failed begin (device not open) must NOT have stopped input-remapper,
+        # or the user is left un-remapped with no restore. Regression guard for the
+        # stop_all-before-open ordering bug.
+        try:
+            import capture
+        except (ImportError, SystemExit):
+            self.skipTest("python-evdev not available")
+        calls = []
+        saved = (engine.available, engine.stop_all, capture.open_nodes)
+        engine.available = lambda: True
+        engine.stop_all = lambda: calls.append("stop") or True
+        capture.open_nodes = lambda layout: (None, [])
+        try:
+            r = self.b.beginCalibration("tartarus")
+        finally:
+            engine.available, engine.stop_all, capture.open_nodes = saved
+        self.assertFalse(r["ok"])
+        self.assertEqual(calls, [])        # remapping left untouched on a failed begin
+        self.assertFalse(self.b.calibrating())
+
+
 if __name__ == "__main__":
     unittest.main()

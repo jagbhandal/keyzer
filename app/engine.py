@@ -406,6 +406,37 @@ def captures_origin(path: Path = CAPTURES) -> str:
     return "none"
 
 
+def record_capture(dev_id: str, device_name: str, hotspot: str, entry: dict,
+                   *, usb: str = "", all_names: list[str] | None = None,
+                   path: Path = CAPTURES) -> None:
+    """Merge one freshly-captured hotspot into the user's captures.json, creating
+    the file/device entry as needed. ``entry`` is {type, code, origin_hash,
+    analog_threshold?}. Atomic write; an existing valid map keeps all its other
+    captured hotspots. If the file exists but is unparseable it's preserved as a
+    ``.corrupt`` sidecar (not silently discarded) before a fresh one is written."""
+    data = load_json(path, None)
+    if not isinstance(data, dict):
+        if path.exists():   # existing but corrupt — keep it instead of clobbering
+            try:
+                path.replace(path.with_name(path.name + ".corrupt"))
+            except OSError:
+                pass
+        data = {}
+    dev = data.get(dev_id)
+    if not isinstance(dev, dict):
+        dev = {}
+        data[dev_id] = dev
+    dev["device_name"] = device_name
+    if usb:
+        dev["usb"] = usb
+    if all_names:
+        dev["all_names"] = all_names
+    if not isinstance(dev.get("captured"), dict):
+        dev["captured"] = {}
+    dev["captured"][hotspot] = entry
+    save_json(path, data, indent=2)
+
+
 def apply_profile(profile: str, binds_by_device: dict, captures: dict,
                   *, autoload: bool = False, combos: dict | None = None) -> dict:
     """Generate + apply a preset per device. binds_by_device: {dev: {hotspot:value}};

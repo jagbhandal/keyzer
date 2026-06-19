@@ -211,6 +211,8 @@ class Backend(QObject):
         self._cal_worker = None   # active _CaptureWorker during in-app calibration, else None
         self._demo_cal = False    # a simulated (no-hardware) calibration session
         self._cal_dev = ""
+        self._shift = {}          # Hypershift layer 2: {profile: {device: {hotspot: value}}}
+        self._shiftKeys = {}      # the hold-to-shift key: {profile: {device: hotspot}}
         self._load_profiles()
 
     def _load_profiles(self) -> None:
@@ -225,6 +227,10 @@ class Backend(QObject):
                                              # real persistence is engine autoload, below
             if isinstance(saved.get("settings"), dict):
                 self._settings = saved["settings"]
+            if isinstance(saved.get("shift"), dict):
+                self._shift = saved["shift"]              # v2: Hypershift layer 2
+            if isinstance(saved.get("shiftKeys"), dict):
+                self._shiftKeys = saved["shiftKeys"]
         else:
             self._profiles = _default_profiles()
             self._active = "Gaming"
@@ -236,9 +242,10 @@ class Backend(QObject):
         if self._demo:
             return   # demo mode is throwaway — never persist profiles/settings to disk
         engine.save_json(engine.PROFILES,
-                         {"version": 1, "active": self._active,
+                         {"version": 2, "active": self._active,
                           "live": self._live, "settings": self._settings,
-                          "profiles": self._profiles})
+                          "profiles": self._profiles,
+                          "shift": self._shift, "shiftKeys": self._shiftKeys})
 
     @Slot(str, "QVariant", result="QVariant")
     def getSetting(self, key: str, default):
@@ -286,15 +293,45 @@ class Backend(QObject):
     def bindings(self) -> dict:
         return self._profiles
 
-    @Slot(str, str, str, str)
-    def setBinding(self, profile: str, dev: str, key: str, value: str) -> None:
-        self._profiles.setdefault(profile, {}).setdefault(dev, {})[key] = value
+    @Property("QVariant", notify=bindingsChanged)
+    def shiftBindings(self) -> dict:
+        """Hypershift layer-2 binds, same shape as bindings ({profile:{dev:{hotspot:value}}})."""
+        return self._shift
+
+    @Property("QVariant", notify=bindingsChanged)
+    def shiftKeysMap(self) -> dict:
+        """The hold-to-shift key per profile/device ({profile: {dev: hotspot}})."""
+        return self._shiftKeys
+
+    def _layer_map(self, layer: str) -> dict:
+        return self._shift if layer == "shift" else self._profiles
+
+    @Slot(str, str, str, str, str)
+    def setBinding(self, profile: str, dev: str, key: str, value: str, layer: str = "base") -> None:
+        self._layer_map(layer).setdefault(profile, {}).setdefault(dev, {})[key] = value
         self._save()
         self.bindingsChanged.emit()
 
+    @Slot(str, str, str, str)
+    def clearBinding(self, profile: str, dev: str, key: str, layer: str = "base") -> None:
+        self._layer_map(layer).get(profile, {}).get(dev, {}).pop(key, None)
+        self._save()
+        self.bindingsChanged.emit()
+
+    @Slot(str, str, result=str)
+    def shiftKeyFor(self, profile: str, dev: str) -> str:
+        return (self._shiftKeys.get(profile, {}) or {}).get(dev, "")
+
     @Slot(str, str, str)
-    def clearBinding(self, profile: str, dev: str, key: str) -> None:
-        self._profiles.get(profile, {}).get(dev, {}).pop(key, None)
+    def setShiftKey(self, profile: str, dev: str, hotspot: str) -> None:
+        """Designate (or clear, with hotspot="") the hold key for a device's shift layer."""
+        per = self._shiftKeys.setdefault(profile, {})
+        if hotspot:
+            per[dev] = hotspot
+        else:
+            per.pop(dev, None)
+            if not per:
+                self._shiftKeys.pop(profile, None)   # don't leave an empty residue behind
         self._save()
         self.bindingsChanged.emit()
 
@@ -348,6 +385,8 @@ class Backend(QObject):
         if err := self._reject_name(new, allow=old):
             return err
         self._profiles = {new if k == old else k: v for k, v in self._profiles.items()}
+        self._shift = {new if k == old else k: v for k, v in self._shift.items()}
+        self._shiftKeys = {new if k == old else k: v for k, v in self._shiftKeys.items()}
         if self._active == old:
             self._active = new
         self._commit()
@@ -361,6 +400,8 @@ class Backend(QObject):
         if err := self._reject_name(new):
             return err
         self._profiles[new] = copy.deepcopy(self._profiles[src])
+        self._shift[new] = copy.deepcopy(self._shift.get(src, {}))
+        self._shiftKeys[new] = copy.deepcopy(self._shiftKeys.get(src, {}))
         self._active = new
         self._commit()
         return {"ok": True, "name": new}
@@ -372,6 +413,8 @@ class Backend(QObject):
         if len(self._profiles) <= 1:
             return {"ok": False, "error": "Keep at least one profile"}
         del self._profiles[name]
+        self._shift.pop(name, None)
+        self._shiftKeys.pop(name, None)
         if self._active == name:
             self._active = next(iter(self._profiles))
         self._commit()
@@ -386,7 +429,8 @@ class Backend(QObject):
         """Serialize one profile to a shareable JSON string (copied to clipboard)."""
         if name not in self._profiles:
             return {"ok": False, "error": "No such profile"}
-        payload = {"keyzer": 1, "name": name, "binds": self._profiles[name]}
+        payload = {"keyzer": 1, "name": name, "binds": self._profiles[name],
+                   "shift": self._shift.get(name, {}), "holdKeys": self._shiftKeys.get(name, {})}
         return {"ok": True, "name": name, "json": json.dumps(payload, indent=2)}
 
     @Slot(str, result="QVariant")
@@ -405,6 +449,13 @@ class Backend(QObject):
             n += 1
         self._profiles[name] = {d: {hk: str(hv) for hk, hv in v.items()}
                                 for d, v in data["binds"].items() if isinstance(v, dict)}
+        shift = data.get("shift")
+        if isinstance(shift, dict):
+            self._shift[name] = {d: {hk: str(hv) for hk, hv in v.items()}
+                                 for d, v in shift.items() if isinstance(v, dict)}
+        hold = data.get("holdKeys")
+        if isinstance(hold, dict):
+            self._shiftKeys[name] = {d: h for d, h in hold.items() if isinstance(h, str)}
         self._active = name
         self._commit()
         return {"ok": True, "name": name}
@@ -547,6 +598,13 @@ class Backend(QObject):
         cap = data.get(dev) if isinstance(data, dict) else None
         return list((cap.get("captured") or {}).keys()) if isinstance(cap, dict) else []
 
+    def _bindable(self, dev: str, binds: dict | None) -> dict:
+        """Keep only real, bindable hotspots that exist on this device — drops orphans
+        and unavailable controls (combos are joined separately at apply time)."""
+        return {h: v for h, v in (binds or {}).items()
+                if h in self._hotspot_ids.get(dev, set())
+                and h not in self._unavailable.get(dev, set())}
+
     @Slot(str, str, result="QVariant")
     def applyToHardware(self, profile: str, dev: str = "") -> dict:
         """Generate + load an input-remapper preset for the profile — all devices,
@@ -562,17 +620,18 @@ class Backend(QObject):
             # a full apply covers EVERY known device, so switching to a profile that
             # leaves a device unbound reverts it rather than leaving the old one live.
             src = {d: prof.get(d, {}) for d in self._layouts}
-        binds = {d: {h: v for h, v in (b or {}).items()
-                     if h in self._hotspot_ids.get(d, set())
-                     and h not in self._unavailable.get(d, set())}
-                 for d, b in src.items()}
+        binds = {d: self._bindable(d, b) for d, b in src.items()}
         if self._demo:
             return self._demo_apply(profile, binds)
+        # Hypershift layer 2 — same bindable filter, plus the per-device hold key.
+        shift = {d: self._bindable(d, (self._shift.get(profile) or {}).get(d)) for d in binds}
+        shift_keys = {d: (self._shiftKeys.get(profile) or {}).get(d, "") for d in binds}
         # Apply always persists: the preset is injected now AND registered with
         # input-remapper's autoload so it survives a reboot/replug. Stop is the
         # only "turn it off" — there is no reset-on-restart mode.
         report = engine.apply_profile(profile, binds, engine.load_captures(),
-                                      autoload=True, combos=self._combos)
+                                      autoload=True, combos=self._combos,
+                                      shift=shift, shift_keys=shift_keys)
         if "_error" in report:
             return {"ok": False, "message": report["_error"], "devices": []}
         devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
@@ -681,5 +740,5 @@ class Backend(QObject):
         names = ("KEYZER_DEV", "KEYZER_VIEW", "KEYZER_PROFILE", "KEYZER_SELECT",
                  "KEYZER_LIGHTING", "KEYZER_ALIGN", "KEYZER_RESULT",
                  "KEYZER_DIALOG", "KEYZER_LIVE", "KEYZER_LIGHTPANEL", "KEYZER_HINT",
-                 "KEYZER_LISTEN", "KEYZER_CALIBRATE")
+                 "KEYZER_LISTEN", "KEYZER_CALIBRATE", "KEYZER_SHIFT")
         return {n: os.environ.get(n, "") for n in names}

@@ -414,7 +414,7 @@ class PersistenceTests(_IsolatedBackendTest):
         captured = {}
         saved = engine.apply_profile
 
-        def spy(profile, binds, captures, *, autoload=False, combos=None):
+        def spy(profile, binds, captures, *, autoload=False, combos=None, **_):
             captured["autoload"] = autoload
             return {}      # empty report -> graceful "nothing to apply", no daemon
 
@@ -447,7 +447,7 @@ class PersistenceTests(_IsolatedBackendTest):
             {"keyzer": 1, "name": "OnlyTar", "binds": {"tartarus": {"TAR_01": "Esc"}}}))
         captured = {}
         saved = engine.apply_profile
-        engine.apply_profile = (lambda profile, binds, caps, *, autoload=False, combos=None:
+        engine.apply_profile = (lambda profile, binds, caps, *, autoload=False, combos=None, **_:
                                 captured.update(keys=set(binds)) or {})
         try:
             self.b.applyToHardware("OnlyTar", "")
@@ -472,7 +472,7 @@ class PersistenceTests(_IsolatedBackendTest):
     def test_unknown_profile_applies_nothing(self):
         captured = {}
         saved = engine.apply_profile
-        engine.apply_profile = (lambda profile, binds, caps, *, autoload=False, combos=None:
+        engine.apply_profile = (lambda profile, binds, caps, *, autoload=False, combos=None, **_:
                                 captured.update(keys=set(binds)) or {})
         try:
             r = self.b.applyToHardware("Ghost", "")
@@ -614,6 +614,87 @@ class DemoModeTests(_IsolatedBackendTest):
         self.assertIsNone(self.b._cal_worker)
         self.assertEqual(self.b.endCalibration(), {"ok": True})
         self.assertFalse(self.b.calibrating())
+
+
+class HypershiftTests(_IsolatedBackendTest):
+    """Hypershift second layer: layer-routed binds, the hold key, apply plumbing,
+    and that shift data survives rename/duplicate/delete/export/restart."""
+
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+
+    def test_set_binding_routes_by_layer(self):
+        self.b.setBinding("Gaming", "tartarus", "TAR_01", "F1", "shift")
+        self.assertEqual(self.b.shiftBindings["Gaming"]["tartarus"]["TAR_01"], "F1")
+        self.assertEqual(self.b.bindings["Gaming"]["tartarus"]["TAR_01"], "Esc")  # base untouched
+
+    def test_set_and_clear_hold_key(self):
+        self.b.setShiftKey("Gaming", "tartarus", "TAR_11")
+        self.assertEqual(self.b.shiftKeyFor("Gaming", "tartarus"), "TAR_11")
+        self.b.setShiftKey("Gaming", "tartarus", "")
+        self.assertEqual(self.b.shiftKeyFor("Gaming", "tartarus"), "")
+
+    def test_apply_passes_shift_layer(self):
+        self.b.setBinding("Gaming", "tartarus", "TAR_01", "F1", "shift")
+        self.b.setShiftKey("Gaming", "tartarus", "TAR_11")
+        cap = {}
+        saved = engine.apply_profile
+
+        def spy(profile, binds, caps, *, autoload=False, combos=None, shift=None, shift_keys=None, **_):
+            cap["shift"], cap["shift_keys"] = shift, shift_keys
+            return {}
+
+        engine.apply_profile = spy
+        try:
+            self.b.applyToHardware("Gaming", "")
+        finally:
+            engine.apply_profile = saved
+        self.assertEqual(cap["shift"]["tartarus"].get("TAR_01"), "F1")
+        self.assertEqual(cap["shift_keys"]["tartarus"], "TAR_11")
+
+    def test_rename_carries_shift(self):
+        self.b.setBinding("Work", "tartarus", "TAR_01", "F1", "shift")
+        self.b.setShiftKey("Work", "tartarus", "TAR_11")
+        self.b.renameProfile("Work", "Office")
+        self.assertEqual(self.b.shiftBindings["Office"]["tartarus"]["TAR_01"], "F1")
+        self.assertEqual(self.b.shiftKeyFor("Office", "tartarus"), "TAR_11")
+        self.assertNotIn("Work", self.b.shiftBindings)
+        self.assertNotIn("Work", self.b.shiftKeysMap)        # old name gone from both maps
+
+    def test_duplicate_deep_copies_shift(self):
+        self.b.setBinding("Work", "tartarus", "TAR_01", "F1", "shift")
+        self.b.setShiftKey("Work", "tartarus", "TAR_11")
+        self.b.duplicateProfile("Work", "Work2")
+        self.assertEqual(self.b.shiftKeyFor("Work2", "tartarus"), "TAR_11")   # hold key carried
+        self.b.setBinding("Work2", "tartarus", "TAR_01", "F2", "shift")
+        self.b.setShiftKey("Work2", "tartarus", "TAR_12")
+        self.assertEqual(self.b.shiftBindings["Work"]["tartarus"]["TAR_01"], "F1")   # source binds intact
+        self.assertEqual(self.b.shiftBindings["Work2"]["tartarus"]["TAR_01"], "F2")
+        self.assertEqual(self.b.shiftKeyFor("Work", "tartarus"), "TAR_11")           # source hold key intact
+        self.assertEqual(self.b.shiftKeyFor("Work2", "tartarus"), "TAR_12")          # copy diverges
+
+    def test_delete_drops_shift(self):
+        self.b.setBinding("Work", "tartarus", "TAR_01", "F1", "shift")
+        self.b.setShiftKey("Work", "tartarus", "TAR_11")
+        self.b.deleteProfile("Work")
+        self.assertNotIn("Work", self.b.shiftBindings)
+        self.assertNotIn("Work", self.b.shiftKeysMap)
+
+    def test_export_import_round_trips_shift(self):
+        self.b.setBinding("Work", "tartarus", "TAR_01", "F1", "shift")
+        self.b.setShiftKey("Work", "tartarus", "TAR_11")
+        imp = self.b.importProfile(self.b.exportProfile("Work")["json"])
+        name = imp["name"]
+        self.assertEqual(self.b.shiftBindings[name]["tartarus"]["TAR_01"], "F1")
+        self.assertEqual(self.b.shiftKeyFor(name, "tartarus"), "TAR_11")
+
+    def test_shift_persists_across_restart(self):
+        self.b.setBinding("Gaming", "tartarus", "TAR_01", "F1", "shift")
+        self.b.setShiftKey("Gaming", "tartarus", "TAR_11")
+        b2 = self.new_backend()
+        self.assertEqual(b2.shiftBindings["Gaming"]["tartarus"]["TAR_01"], "F1")
+        self.assertEqual(b2.shiftKeyFor("Gaming", "tartarus"), "TAR_11")
 
 
 if __name__ == "__main__":

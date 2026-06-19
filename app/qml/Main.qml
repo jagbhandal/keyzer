@@ -27,6 +27,7 @@ Rectangle {
     readonly property color bg0: "#0c0c11"
     readonly property color danger: "#d65c44"
     readonly property color amber: "#e0a83a"
+    readonly property color violet: "#9b8cff"       // Hypershift second-layer accent
 
     // ---------- neon: "powered on" pulse driver ----------
     // one shared low-amplitude oscillation; everything energized reads off this,
@@ -151,9 +152,16 @@ Rectangle {
     readonly property var device: backend.layouts[curDev]
     readonly property var viewObj: (device && curView && device.views[curView]) ? device.views[curView] : null
     readonly property var viewNames: backend.viewNames(curDev)
+    property string bindLayer: "base"            // "base" | "shift" (Hypershift layer 2)
+    property bool pickingHoldKey: false      // next hotspot click designates the hold key
     readonly property var bindMap: {
-        var p = backend.bindings[curProfile]
+        var src = root.bindLayer === "shift" ? backend.shiftBindings : backend.bindings
+        var p = src[curProfile]
         return (p && p[curDev]) ? p[curDev] : ({})
+    }
+    readonly property string holdKey: {      // the hold-to-shift key for this profile+device
+        var m = backend.shiftKeysMap[curProfile]
+        return (m && m[curDev]) ? m[curDev] : ""
     }
     // hotspots in the CURRENT view whose output is shared with another visible
     // hotspot (scoped to the view so cross-view dups, e.g. WASD on keypad + thumb,
@@ -171,7 +179,21 @@ Rectangle {
     // ---------- logic ----------
     function firstView(dev) { return backend.viewNames(dev)[0] }
     function selectKey(id) { selKey = id; capValue = ""; listening = false }
-    function deselect() { selKey = ""; capValue = ""; listening = false }
+    function deselect() { selKey = ""; capValue = ""; listening = false; pickingHoldKey = false }
+    function setLayer(l) { root.bindLayer = l; root.pickingHoldKey = false; root.deselect() }
+    function setHoldKeyTo(id) {   // designate a hotspot as the shift hold key, then re-apply
+        var clearing = id === root.holdKey
+        backend.setShiftKey(root.curProfile, root.curDev, clearing ? "" : id)
+        root.pickingHoldKey = false
+        root.applyActiveProfile()
+        if (clearing) { showToast("Hold key cleared"); return }
+        var base = backend.bindings[curProfile]
+        var baseBound = (base && base[curDev]) ? base[curDev][id] : undefined
+        if (baseBound !== undefined && baseBound !== "")
+            showToast(id.replace(/_/g, " ") + " is the hold key — clear its base bind (" + baseBound + ") so it doesn't fire when held")
+        else
+            showToast(id.replace(/_/g, " ") + " is now the hold key")
+    }
     function switchDevice(dev) {
         if (root.calibrating && dev !== curDev) {   // follow calibration to the new device
             backend.endCalibration()
@@ -194,11 +216,13 @@ Rectangle {
         listening = false                                     // committing ends listen mode
         var v = capValue !== "" ? capValue : curBinding()
         if (v === "" || v === "—") { showToast("Pick a binding first"); return }
-        backend.setBinding(curProfile, curDev, selKey, v)
+        backend.setBinding(curProfile, curDev, selKey, v, root.bindLayer)
         markDirty()
         var r = backend.applyToHardware(curProfile, curDev)   // set AND push live, one step
         var warn = bindWarning(r, selKey)                     // did THIS bind get dropped server-side?
         if (warn) showToast("⚠ not applied — " + warn)
+        else if (root.bindLayer === "shift" && root.holdKey === "")
+            showToast(selKey.replace(/_/g, " ") + " → " + v + "  · set a hold key to activate")
         else if (r.ok) showToast(selKey.replace(/_/g, " ") + " → " + v + "  · live")
         else {
             var e = (r.devices && r.devices.length) ? (r.devices[0].error || r.message) : r.message
@@ -212,12 +236,15 @@ Rectangle {
     function bindWarning(report, key) {
         return (report.devices || [])
             .reduce(function (all, d) { return all.concat(d.warnings || []) }, [])
-            .find(function (w) { return w.indexOf(key + ":") === 0 || w.indexOf(key + " ") === 0 }) || ""
+            .find(function (w) {
+                var s = w.indexOf("shift ") === 0 ? w.slice(6) : w   // shift-layer warnings are 'shift '-prefixed
+                return s.indexOf(key + ":") === 0 || s.indexOf(key + " ") === 0
+            }) || ""
     }
     function clearBinding() {
         if (selKey === "") return
         listening = false
-        backend.clearBinding(curProfile, curDev, selKey)
+        backend.clearBinding(curProfile, curDev, selKey, root.bindLayer)
         capValue = ""; markDirty()
         var r = backend.applyToHardware(curProfile, curDev)
         showToast(r.ok ? "Cleared · live" : "Cleared")
@@ -328,6 +355,7 @@ Rectangle {
         if (q.KEYZER_LIVE) qaLive = true
         if (q.KEYZER_HINT) capSource = "default"
         if (q.KEYZER_LIGHTPANEL) root.openLightingDemo()
+        if (q.KEYZER_SHIFT === "1") root.bindLayer = "shift"   // QA: render the Hypershift layer
         if (q.KEYZER_CALIBRATE === "1") {   // QA: render calibrate mode without a live capture session
             root.calBindable = backend.bindableIds(root.curDev)
             root.capturedIds = root.calBindable.slice(0, 5)   // a few already set
@@ -458,6 +486,7 @@ Rectangle {
         property bool captured: false      // user has a recorded code for this key
         property bool armed: false         // awaiting a press for this key right now
         property bool combo: false         // derived 8-way diagonal — not directly captured
+        property bool isHold: false        // the Hypershift hold key (shown in the shift layer)
         width: k.w; height: k.h
         opacity: hs.unavailable !== "" ? 0.45 : 1
         Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
@@ -516,25 +545,34 @@ Rectangle {
             color: "transparent"
             border.width: 1; border.color: root.alpha(root.muted2, 0.45)
         }
+        Rectangle {   // Hypershift hold-key marker (violet)
+            visible: hs.isHold
+            anchors.fill: parent; radius: 9
+            color: root.alpha(root.violet, 0.12)
+            border.width: 2; border.color: root.violet
+        }
         Rectangle {
             id: pill
             visible: hs.calibrating ? (hs.armed || hs.captured || hs.unavailable !== "")
-                                    : (hs.binding !== "" || hs.selected || hs.unavailable !== "")
+                                    : (hs.binding !== "" || hs.selected || hs.unavailable !== "" || hs.isHold)
             anchors.centerIn: parent
             width: Math.max(26, pillTxt.implicitWidth + 14); height: 24; radius: 6
             color: Qt.rgba(0.03, 0.035, 0.024, 0.86)
             border.width: hs.selected ? 1.5 : 1
             border.color: hs.unavailable !== "" ? root.line2
                         : hs.calibrating ? (hs.armed ? root.amber : root.green)
+                        : hs.isHold ? root.violet
                         : hs.conflict ? root.amber
                         : hs.selected ? root.greenHot : root.alpha(root.green, 0.45)
             Text {
                 id: pillTxt; anchors.centerIn: parent
                 text: hs.unavailable !== "" ? "n/a"
                     : hs.calibrating ? (hs.armed ? "●" : hs.captured ? "✓" : "")
+                    : hs.isHold ? "HOLD"
                     : (hs.binding !== "" ? hs.binding : (hs.selected ? "·" : ""))
                 color: hs.unavailable !== "" ? root.muted2
                      : hs.calibrating ? (hs.armed ? root.amber : root.green)
+                     : hs.isHold ? root.violet
                      : hs.conflict ? root.amber : (hs.selected ? root.greenHot : root.green)
                 font.pixelSize: 14; font.bold: true
             }
@@ -550,10 +588,20 @@ Rectangle {
         HoverHandler { id: hov; cursorShape: root.aligning ? Qt.SizeAllCursor : Qt.PointingHandCursor }
         TapHandler {
             enabled: !root.aligning && !root.lighting
-            onTapped: hs.unavailable !== "" ? root.showToast(hs.unavailable)
-                    : root.calibrating ? (hs.combo ? root.showToast("8-way diagonals are set from their two keys — no need to calibrate")
-                                                   : root.armKey(hs.k.id))
-                    : root.selectKey(hs.k.id)
+            onTapped: {
+                if (hs.unavailable !== "") { root.showToast(hs.unavailable); return }
+                if (root.pickingHoldKey) {
+                    if (hs.combo) root.showToast("Pick a single key as the hold key")
+                    else root.setHoldKeyTo(hs.k.id)
+                    return
+                }
+                if (root.calibrating) {
+                    if (hs.combo) root.showToast("8-way diagonals are set from their two keys — no need to calibrate")
+                    else root.armKey(hs.k.id)
+                    return
+                }
+                root.selectKey(hs.k.id)
+            }
         }
         DragHandler { enabled: root.aligning; target: hs; onActiveChanged: if (!active) root.setCoord(hs.k.id, hs.x, hs.y) }
     }
@@ -666,7 +714,7 @@ Rectangle {
                             model: backend.profileList
                             MenuItem {
                                 text: (modelData === root.curProfile ? "●  " : "      ") + modelData
-                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile(); if (root.calibrating) root.exitCalibrate(); else root.applyActiveProfile() }
+                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile(); root.deselect(); if (root.calibrating) root.exitCalibrate(); else root.applyActiveProfile() }
                             }
                         }
                         MenuSeparator {}
@@ -1164,6 +1212,73 @@ Rectangle {
                 }
             }
 
+            // Hypershift: layer selector + hold-key control (top-right of the stage)
+            Row {
+                anchors { top: parent.top; right: parent.right; margins: 14 }
+                z: 4; spacing: 8
+                visible: !root.aligning && !root.calibrating && !root.lighting
+                Rectangle {   // [ Base | Shift ] segmented
+                    width: segRow.implicitWidth + 6; height: 30; radius: 9
+                    color: root.panel2; border.width: 1; border.color: root.lineC
+                    anchors.verticalCenter: parent.verticalCenter
+                    Row {
+                        id: segRow; anchors.centerIn: parent; spacing: 3
+                        Repeater {
+                            model: [{ k: "base", t: "Base" }, { k: "shift", t: "Shift" }]
+                            Rectangle {
+                                property bool sel: root.bindLayer === modelData.k
+                                property bool isShift: modelData.k === "shift"
+                                width: segTxt.implicitWidth + 26; height: 24; radius: 6
+                                color: sel ? (isShift ? root.alpha(root.violet, 0.22) : root.greenDim) : "transparent"
+                                border.width: sel ? 1 : 0
+                                border.color: isShift ? root.violet : root.green
+                                Text {
+                                    id: segTxt; anchors.centerIn: parent; text: modelData.t
+                                    color: sel ? (isShift ? root.violet : root.greenTxt) : root.muted
+                                    font.pixelSize: 12; font.bold: true
+                                }
+                                MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.setLayer(modelData.k) }
+                            }
+                        }
+                    }
+                }
+                Rectangle {   // hold-key control — only in the Shift layer
+                    visible: root.bindLayer === "shift"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: holdRow.implicitWidth + 18; height: 30; radius: 9
+                    color: root.pickingHoldKey ? root.alpha(root.violet, 0.22) : root.panel2
+                    border.width: 1; border.color: root.violet
+                    Row {
+                        id: holdRow; anchors.centerIn: parent; spacing: 7
+                        Text { anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 10; font.letterSpacing: 1; color: root.muted2; text: "HOLD" }
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12; font.bold: true; color: root.violet
+                            text: root.pickingHoldKey ? "click a key…"
+                                : (root.holdKey ? root.holdKey.replace(/_/g, " ") : "set a key")
+                        }
+                    }
+                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.pickingHoldKey = !root.pickingHoldKey }
+                }
+            }
+
+            // shift-layer banner — what this layer is, while it's active
+            Rectangle {
+                visible: root.bindLayer === "shift" && !root.aligning && !root.calibrating && !root.lighting
+                anchors { top: parent.top; horizontalCenter: parent.horizontalCenter; topMargin: 14 }
+                z: 3
+                width: shiftRow.implicitWidth + 26; height: 34; radius: 10
+                color: Qt.rgba(0.07, 0.065, 0.1, 0.94); border.width: 1; border.color: root.violet
+                Row {
+                    id: shiftRow; anchors.centerIn: parent; spacing: 9
+                    Text { text: "⇧ SHIFT LAYER"; color: root.violet; font.pixelSize: 11; font.bold: true; font.letterSpacing: 1; anchors.verticalCenter: parent.verticalCenter }
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12; color: "#d9d2ff"
+                        text: root.holdKey ? ("fires while you hold " + root.holdKey.replace(/_/g, " "))
+                                           : "set a hold key, then bind the second layer"
+                    }
+                }
+            }
+
             // align bar
             Rectangle {
                 visible: root.aligning
@@ -1265,6 +1380,7 @@ Rectangle {
                             captured: root.calibrating && root.capturedIds.indexOf(modelData.id) >= 0
                             armed: root.armedKey === modelData.id
                             combo: modelData.combo ? true : false
+                            isHold: root.bindLayer === "shift" && root.holdKey === modelData.id
                         }
                     }
                 }

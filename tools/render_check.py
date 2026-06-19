@@ -40,6 +40,7 @@ STATES = [
     ("hint / calibrate bar", {"KEYZER_HINT": "1"}),
     ("header / LIVE pill", {"KEYZER_LIVE": "1"}),
     ("calibrate / capture mode", {"KEYZER_DEV": "tartarus", "KEYZER_CALIBRATE": "1"}),
+    ("hypershift / shift layer", {"KEYZER_DEV": "tartarus", "KEYZER_SHIFT": "1"}),
 ]
 BAD = ("error", "qml:", "unexpected token", "typeerror", "referenceerror",
        "cannot read", "is not a function", "is not defined", "traceback")

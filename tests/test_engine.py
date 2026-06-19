@@ -536,6 +536,45 @@ class RecordCaptureTests(unittest.TestCase):
             self.assertEqual(sidecar.read_text(), "{ not json ]")
 
 
+class ShiftLayerTests(unittest.TestCase):
+    """engine.build_preset Hypershift: a shift bind becomes a [hold, target]
+    combination that longest-match picks over the base single-key mapping."""
+
+    def setUp(self):
+        self.caps = {
+            "TAR_11": {"type": 1, "code": 42, "origin_hash": "a1"},   # the hold key
+            "TAR_01": {"type": 1, "code": 2, "origin_hash": "a1"},
+            "TAR_02": {"type": 1, "code": 3, "origin_hash": "a1"},
+        }
+
+    def test_shift_bind_becomes_hold_combination(self):
+        mappings, warnings = engine.build_preset(
+            {"TAR_01": "Esc"}, self.caps,
+            shift_binds={"TAR_02": "F1"}, shift_key="TAR_11")
+        self.assertEqual(warnings, [])
+        base = next(m for m in mappings if m["output_symbol"] == "Escape")
+        self.assertEqual(len(base["input_combination"]), 1)        # base = single key
+        sh = next(m for m in mappings if m["output_symbol"] == "F1")
+        ic = sh["input_combination"]
+        self.assertEqual([x["code"] for x in ic], [42, 3])         # [hold, target]
+
+    def test_shift_skips_the_hold_key_itself(self):
+        mappings, _ = engine.build_preset(
+            {}, self.caps, shift_binds={"TAR_11": "X"}, shift_key="TAR_11")
+        self.assertEqual(mappings, [])   # the hold key can't be its own shift target
+
+    def test_uncaptured_hold_key_warns(self):
+        mappings, warnings = engine.build_preset(
+            {}, self.caps, shift_binds={"TAR_01": "F1"}, shift_key="NOPE")
+        self.assertEqual(mappings, [])
+        self.assertTrue(any("hold key" in w for w in warnings))
+
+    def test_no_hold_key_yields_no_shift_mappings(self):
+        mappings, _ = engine.build_preset(
+            {}, self.caps, shift_binds={"TAR_01": "F1"}, shift_key="")
+        self.assertEqual(mappings, [])
+
+
 class ApplyRevertTests(unittest.TestCase):
     """engine.apply_profile reverts a captured device the profile leaves unbound
     (stop + clear_autoload) so 'active profile = live' holds. All daemon-facing

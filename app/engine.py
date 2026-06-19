@@ -211,7 +211,8 @@ def _input_config(cap: dict) -> dict:
     return inp
 
 
-def build_preset(binds: dict, captures: dict, combos: dict | None = None) -> tuple[list[dict], list[str]]:
+def build_preset(binds: dict, captures: dict, combos: dict | None = None,
+                 *, shift_binds: dict | None = None, shift_key: str | None = None) -> tuple[list[dict], list[str]]:
     """Join binds with captures into input-remapper mappings (+ skip warnings).
 
     A hotspot listed in ``combos`` (e.g. an 8-way diagonal -> its two cardinal
@@ -219,18 +220,22 @@ def build_preset(binds: dict, captures: dict, combos: dict | None = None) -> tup
     longest-match then fires it instead of the members' individual mappings."""
     combos = combos or {}
     mappings, warnings = [], []
-    for hotspot, value in binds.items():
-        members = combos.get(hotspot) or [hotspot]
-        inputs, bad = [], None
-        for m in members:
+
+    def inputs_for(hotspot):
+        """The input_combination list for a hotspot (its combo members, or itself),
+        or (None, reason) if a member isn't captured / is pointer movement."""
+        inputs = []
+        for m in (combos.get(hotspot) or [hotspot]):
             cap = captures.get(m)
             if not cap:
-                bad = f"{hotspot}: {m} not captured yet — run capture.py"
-                break
+                return None, f"{hotspot}: {m} not captured yet — run capture.py"
             if _is_pointer(cap):
-                bad = f"{hotspot}: {m} captured pointer movement — re-capture it"
-                break
+                return None, f"{hotspot}: {m} captured pointer movement — re-capture it"
             inputs.append(_input_config(cap))
+        return inputs, None
+
+    for hotspot, value in binds.items():
+        inputs, bad = inputs_for(hotspot)
         if bad:
             warnings.append(bad)
             continue
@@ -241,6 +246,32 @@ def build_preset(binds: dict, captures: dict, combos: dict | None = None) -> tup
             continue
         mappings.append({"input_combination": inputs,
                          "target_uinput": target, "output_symbol": symbol})
+
+    # Hypershift second layer: each bind fires only while the hold key is also down —
+    # a [hold, target] combination that input-remapper's longest-match picks over the
+    # base single-key mapping. Same primitive as the 8-way thumb diagonals.
+    if shift_binds and shift_key:
+        hold_cap = captures.get(shift_key)
+        if not hold_cap:
+            warnings.append(f"shift: hold key {shift_key} not captured — run capture.py")
+        elif _is_pointer(hold_cap):
+            warnings.append(f"shift: hold key {shift_key} captured pointer movement — re-capture it")
+        else:
+            hold_input = _input_config(hold_cap)
+            for hotspot, value in shift_binds.items():
+                if hotspot == shift_key:
+                    continue   # the hold key itself can't be a shift target
+                inputs, bad = inputs_for(hotspot)
+                if bad:
+                    warnings.append("shift " + bad)
+                    continue
+                try:
+                    target, symbol = output(value)
+                except (Untranslatable, AttributeError, TypeError, ValueError) as exc:
+                    warnings.append(f"shift {hotspot} = {value!r}: {exc}")
+                    continue
+                mappings.append({"input_combination": [hold_input, *inputs],
+                                 "target_uinput": target, "output_symbol": symbol})
     return mappings, warnings
 
 
@@ -438,9 +469,12 @@ def record_capture(dev_id: str, device_name: str, hotspot: str, entry: dict,
 
 
 def apply_profile(profile: str, binds_by_device: dict, captures: dict,
-                  *, autoload: bool = False, combos: dict | None = None) -> dict:
+                  *, autoload: bool = False, combos: dict | None = None,
+                  shift: dict | None = None, shift_keys: dict | None = None) -> dict:
     """Generate + apply a preset per device. binds_by_device: {dev: {hotspot:value}};
-    captures: the captures.json dict. Returns a per-device result report."""
+    captures: the captures.json dict. ``shift``/``shift_keys`` add the Hypershift
+    second layer ({dev: {hotspot:value}} and {dev: hold-hotspot}). Returns a
+    per-device result report."""
     if not available():
         return {"_error": "input-remapper isn't installed"}
     if not service_ready():
@@ -466,7 +500,9 @@ def apply_profile(profile: str, binds_by_device: dict, captures: dict,
             continue
         key = resolve_key(device_name, keys)
         mappings, warnings = build_preset(binds, cap.get("captured") or {},
-                                          (combos or {}).get(dev_id))
+                                          (combos or {}).get(dev_id),
+                                          shift_binds=(shift or {}).get(dev_id),
+                                          shift_key=(shift_keys or {}).get(dev_id))
         if not mappings:
             # The active profile leaves this device unbound — revert it to hardware
             # defaults (stop injecting + drop its autoload) so "active profile = live"

@@ -28,17 +28,18 @@ BASE = {"QT_QPA_PLATFORM": "offscreen", "QT_QUICK_BACKEND": "software",
         "QSG_RENDER_LOOP": "basic", "KEYZER_DEMO": "1",
         "KEYZER_W": "1600", "KEYZER_H": "1000"}
 
-# (filename, extra env hooks) — a curated tour of the app.
+# (filename, extra env hooks) — a curated tour. Names match the README's <img> refs;
+# regenerating overwrites the committed set used in README.md.
 SHOTS = [
-    ("01-keypad.png",    {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "main"}),
-    ("02-bind.png",      {"KEYZER_DEV": "tartarus", "KEYZER_SELECT": "TAR_08"}),
-    ("03-calibrate.png", {"KEYZER_DEV": "tartarus", "KEYZER_CALIBRATE": "1"}),
-    ("04-thumb.png",     {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "thumb"}),
-    ("05-mouse.png",     {"KEYZER_DEV": "naga", "KEYZER_VIEW": "side"}),
-    ("06-lighting.png",  {"KEYZER_DEV": "naga", "KEYZER_LIGHTPANEL": "1"}),
-    ("07-live.png",      {"KEYZER_DEV": "tartarus", "KEYZER_LIVE": "1"}),
+    ("keyzer.png",     {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "main"}),
+    ("calibrate.png",  {"KEYZER_DEV": "tartarus", "KEYZER_CALIBRATE": "1"}),
+    ("compare.png",    {"KEYZER_DEV": "tartarus", "KEYZER_PROFILE": "Gaming", "KEYZER_COMPARE": "Work"}),
+    ("hypershift.png", {"KEYZER_DEV": "tartarus", "KEYZER_SHIFT": "1"}),
+    ("naga.png",       {"KEYZER_DEV": "naga", "KEYZER_VIEW": "side"}),
+    ("lighting.png",   {"KEYZER_DEV": "naga", "KEYZER_LIGHTPANEL": "1"}),
+    ("thumb.png",      {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "thumb"}),
 ]
-GIF_FRAMES = ["01-keypad.png", "03-calibrate.png", "06-lighting.png", "05-mouse.png"]
+GIF_FRAMES = ["keyzer.png", "calibrate.png", "compare.png", "lighting.png"]
 
 
 def render(name: str, extra: dict) -> bool:

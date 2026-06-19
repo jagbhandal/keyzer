@@ -149,6 +149,7 @@ Rectangle {
     property bool qaLive: false              // offscreen QA: force the LIVE pill visible
     property string capSource: "none"        // 'user' | 'default' | 'none' — drives the calibrate hint
     property bool hintDismissed: false
+    property bool shotMode: false            // a screenshot is being captured — hide demo chrome
     // ---- live in-app calibration ----
     property bool calibrating: false         // calibrate mode active
     property string armedKey: ""             // hotspot awaiting a physical press (pulses)
@@ -397,6 +398,7 @@ Rectangle {
         if (q.KEYZER_LIVE) qaLive = true
         if (q.KEYZER_HINT) capSource = "default"
         if (q.KEYZER_LIGHTPANEL) root.openLightingDemo()
+        if (q.KEYZER_SHOT) root.shotMode = true   // screenshot render — drop the demo badge
         if (q.KEYZER_SHIFT === "1") root.bindLayer = "shift"   // QA: render the Hypershift layer
         if (q.KEYZER_COMPARE) root.compareProfile = q.KEYZER_COMPARE   // QA: render profile-diff
         if (q.KEYZER_CALIBRATE === "1") {   // QA: render calibrate mode without a live capture session
@@ -735,8 +737,8 @@ Rectangle {
                 Text { textFormat: Text.RichText; text: "KEY<font color='#44d62c'>ZER</font>"; color: root.txt; font.pixelSize: 16; font.bold: true; font.letterSpacing: 2 }
                 Text { text: "VISUAL REMAPPING · LINUX"; color: root.muted2; font.pixelSize: 9; font.letterSpacing: 0.5 }
             }
-            Rectangle {   // demo-mode badge — quiet + honest about what's simulated
-                visible: backend.demo
+            Rectangle {   // demo-mode badge — for interactive demo users; hidden in screenshots
+                visible: backend.demo && !root.shotMode
                 anchors.verticalCenter: parent.verticalCenter
                 width: demoRow.implicitWidth + 16; height: 22; radius: 6
                 color: root.panel2; border.width: 1; border.color: root.alpha(root.cyan, 0.55)

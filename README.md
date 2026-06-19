@@ -14,9 +14,17 @@
 
 ![KEYZER — click a key on a picture of your device and bind it](docs/screenshots/keyzer.png)
 
-> Razer Synapse doesn't run on Linux, and [input-remapper](https://github.com/sezanzeb/input-remapper)'s stock editor makes you map raw event codes by hand. **KEYZER gives you the workflow you actually want: see your real device, click a key, pick a binding.** Free, open source, no account, no telemetry.
+> Razer Synapse doesn't run on Linux, and [input-remapper](https://github.com/sezanzeb/input-remapper)'s stock editor makes you map raw event codes by hand. **KEYZER gives you the workflow you actually want: see your real device, click a key, pick a binding — and it's live instantly, no Apply step.** Free, open source, no account, no telemetry.
+
+<p align="center">
+  <img src="docs/screenshots/tour.gif" alt="KEYZER in action — keypad, in-app calibration, profile compare, Chroma lighting" width="760">
+</p>
 
 <table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/calibrate.png" alt="In-app calibration"><br><sub><b>Calibrate in the app</b> — click a key, press it, done. No terminal.</sub></td>
+    <td width="50%"><img src="docs/screenshots/compare.png" alt="Compare two profiles"><br><sub><b>Compare profiles</b> — green = same, amber = changed, at a glance</sub></td>
+  </tr>
   <tr>
     <td width="50%"><img src="docs/screenshots/naga.png" alt="Naga Pro side view"><br><sub><b>Naga Pro</b> — the 12-button thumb grid, face-on</sub></td>
     <td width="50%"><img src="docs/screenshots/lighting.png" alt="Per-zone Chroma lighting"><br><sub><b>Lighting</b> — per-zone Chroma effects + a full colour wheel</sub></td>
@@ -50,7 +58,9 @@ Synapse is more capable:
 | **Per-app / per-game auto-switch** | ❌ Not yet ([roadmap](#roadmap)) | ✅ Yes |
 | **RGB / Chroma lighting** | ⚠️ Per-zone colour, brightness & effects (needs OpenRazer) | ✅ Full Chroma Studio (per-key, animations, app sync) |
 | **DPI / sensitivity stages** | ❌ No (a hardware function) | ✅ Yes |
-| **Hypershift / second layer** | ❌ No | ✅ Yes |
+| **Hypershift / second layer** | ✅ Yes — hold a key for a whole second layer | ✅ Yes |
+| **Visual calibration** | ✅ In-app (click a key, press it) | ✅ N/A (knows its own devices) |
+| **Profile compare / diff** | ✅ Yes — see what changed between profiles | ❌ No |
 | **On-board memory (profile saved on the device)** | ❌ No — applies live through the OS, so it works system-wide | ✅ Yes — travels with the device |
 | **Supported devices** | ⚠️ Tartarus Pro + Naga Pro (more via a JSON entry) | ✅ The full Razer lineup |
 | **Support** | Community / unofficial | Official (Razer) |
@@ -68,6 +78,8 @@ KEYZER needs two things, both packaged on Ubuntu/Debian: the **input-remapper** 
 ```bash
 git clone https://github.com/jagbhandal/keyzer.git && cd keyzer && ./install.sh && python3 app/main.py
 ```
+
+**Just want to look first?** `python3 app/main.py --demo` runs the whole UI with sample devices — no Razer hardware, input-remapper, or OpenRazer needed.
 
 ### Ubuntu / Debian (recommended)
 
@@ -126,7 +138,7 @@ KEYZER detects what's present at startup and adapts (the footer shows engine sta
 
 You don't need to know anything about input-remapper. The flow:
 
-**Once per machine:** run `python3 app/capture.py` and press each key when asked — this teaches KEYZER the real code each physical key sends. (A default map ships so you can click around before calibrating.)
+**Once per machine — calibrate.** Click **Calibrate** in the toolbar, then click a key on the device and press it; repeat for each highlighted key. This teaches KEYZER the real code each physical key sends. (Prefer the terminal? `python3 app/capture.py` does the same. A default map ships so you can click around before calibrating.)
 
 **To bind a key:**
 1. Pick your device, then click the key on the picture.
@@ -154,7 +166,7 @@ You don't need to know anything about input-remapper. The flow:
 
 > **Held, not tapped:** anything joined with `+` is *held down together* for as long as you hold the trigger key, then released — perfect for movement (`W+A`) and modifiers (`Shift`). The same syntax covers shortcuts like `Ctrl+C` — just tap the key and the combo fires once.
 
-Profiles (e.g. **Gaming** vs **Work**) live in the header menu — switch anytime, and export/import to share a setup. Timed/recorded macro sequences aren't in the UI yet; for those you can edit the input-remapper preset directly.
+Profiles (e.g. **Gaming** vs **Work**) live in the header menu — switching one applies it live instantly (there's no separate Apply step). **Compare** shows what differs between two profiles at a glance, and **Hypershift** gives each device a hold-key second layer: hold one key and every other key does something else. Export/import to share a setup. Timed/recorded macro sequences aren't in the UI yet; for those you can edit the input-remapper preset directly.
 
 ## How it works
 
@@ -177,10 +189,15 @@ KEYZER talks to input-remapper only through its CLI / preset files / DBus — ne
 
 - [x] Visual UI: device images + clickable hotspots, assign panel, profiles, views, theme
 - [x] Dependency-aware startup (engine + OpenRazer detection)
-- [x] `capture.py` — records the real evdev `(type, code)` each key emits
+- [x] In-app click-to-calibrate (capture evdev codes from the UI; `capture.py` CLI still available)
 - [x] Generate input-remapper presets from a profile and reload the daemon (`engine.py`)
+- [x] Bindings persist across reboot & device reconnect (input-remapper autoload), applied automatically — no Apply button
 - [x] OpenRazer lighting control (per-zone Chroma effects + brightness)
+- [x] Hypershift second layer (hold-key combinations)
+- [x] Profile compare/diff + honest apply-health readout
+- [x] Demo mode (`--demo`) — try KEYZER with no hardware
 - [ ] App-aware profile switching (GNOME/Wayland active-window)
+- [ ] Timed/recorded macros in the UI
 - [ ] `.deb` package (`Depends: input-remapper, python3-pyside6.*`, `Recommends: openrazer-meta`)
 
 ## Disclaimer

@@ -132,6 +132,19 @@ Rectangle {
     }
     property string dirtyText: "All changes saved"
     property var applyResult: null          // last Apply-to-hardware report
+    property string compareProfile: ""      // profile-diff: compare the active profile against this one
+    readonly property var applyHealth: {    // honest footer numbers from the last apply
+        var r = root.applyResult
+        if (!r || !r.devices || !r.devices.length) return null
+        var live = 0, dropped = 0, failed = 0
+        for (var i = 0; i < r.devices.length; i++) {
+            var d = r.devices[i]
+            if (d.ok) live += (d.count || 0)
+            else if (d.error && d.error !== "no applicable binds") failed++   // a device that didn't apply
+            dropped += (d.warnings ? d.warnings.length : 0)
+        }
+        return { live: live, dropped: dropped, failed: failed }
+    }
     property var capSummary: ({})            // per-device captured-key counts
     property bool qaLive: false              // offscreen QA: force the LIVE pill visible
     property string capSource: "none"        // 'user' | 'default' | 'none' — drives the calibrate hint
@@ -162,6 +175,21 @@ Rectangle {
     readonly property string holdKey: {      // the hold-to-shift key for this profile+device
         var m = backend.shiftKeysMap[curProfile]
         return (m && m[curDev]) ? m[curDev] : ""
+    }
+    readonly property var compareMap: {      // the compared profile's binds for this device+layer
+        if (root.compareProfile === "") return ({})
+        var src = root.bindLayer === "shift" ? backend.shiftBindings : backend.bindings
+        var p = src[root.compareProfile]
+        return (p && p[curDev]) ? p[curDev] : ({})
+    }
+    // profile-diff state for a hotspot vs the compared profile (same layer)
+    function diffState(id) {
+        if (root.compareProfile === "" || root.compareProfile === root.curProfile) return ""
+        var a = root.bindMap[id], b = root.compareMap[id]
+        if (a === b) return a === undefined ? "" : "same"
+        if (a !== undefined && b === undefined) return "here"
+        if (a === undefined) return "there"
+        return "changed"
     }
     // hotspots in the CURRENT view whose output is shared with another visible
     // hotspot (scoped to the view so cross-view dups, e.g. WASD on keypad + thumb,
@@ -210,6 +238,18 @@ Rectangle {
     function ovKey(id) { return curDev + "|" + curView + "|" + id }
     function setCoord(id, nx, ny) { var m = ov; m[ovKey(id)] = { x: Math.round(nx), y: Math.round(ny) }; ov = m }
     function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }   // theme color at alpha
+    function mergeApplyResult(r) {   // fold a per-device apply into the whole-profile health
+        if (!r || !r.devices) return
+        if (!root.applyResult || !root.applyResult.devices) { root.applyResult = r; return }
+        var idx = {}, devs = root.applyResult.devices.slice()
+        for (var i = 0; i < devs.length; i++) idx[devs[i].dev] = i
+        for (var j = 0; j < r.devices.length; j++) {
+            var d = r.devices[j]
+            if (idx[d.dev] !== undefined) devs[idx[d.dev]] = d
+            else devs.push(d)
+        }
+        root.applyResult = { ok: devs.every(function (x) { return x.ok }), message: root.applyResult.message, devices: devs }
+    }
 
     function applyBinding() {
         if (selKey === "") return
@@ -219,6 +259,7 @@ Rectangle {
         backend.setBinding(curProfile, curDev, selKey, v, root.bindLayer)
         markDirty()
         var r = backend.applyToHardware(curProfile, curDev)   // set AND push live, one step
+        root.mergeApplyResult(r)                              // keep the footer health current
         var warn = bindWarning(r, selKey)                     // did THIS bind get dropped server-side?
         if (warn) showToast("⚠ not applied — " + warn)
         else if (root.bindLayer === "shift" && root.holdKey === "")
@@ -247,6 +288,7 @@ Rectangle {
         backend.clearBinding(curProfile, curDev, selKey, root.bindLayer)
         capValue = ""; markDirty()
         var r = backend.applyToHardware(curProfile, curDev)
+        root.mergeApplyResult(r)
         showToast(r.ok ? "Cleared · live" : "Cleared")
     }
     function applyActiveProfile() {   // the active profile is always what's live — push it
@@ -356,6 +398,7 @@ Rectangle {
         if (q.KEYZER_HINT) capSource = "default"
         if (q.KEYZER_LIGHTPANEL) root.openLightingDemo()
         if (q.KEYZER_SHIFT === "1") root.bindLayer = "shift"   // QA: render the Hypershift layer
+        if (q.KEYZER_COMPARE) root.compareProfile = q.KEYZER_COMPARE   // QA: render profile-diff
         if (q.KEYZER_CALIBRATE === "1") {   // QA: render calibrate mode without a live capture session
             root.calBindable = backend.bindableIds(root.curDev)
             root.capturedIds = root.calBindable.slice(0, 5)   // a few already set
@@ -371,8 +414,9 @@ Rectangle {
         id: applyTimer; interval: 60
         onTriggered: {
             var r = backend.applyToHardware(root.curProfile, "")
+            if (r.devices && r.devices.length) root.applyResult = r   // whole-profile health snapshot
             if (r.ok) { root.showToast(root.curProfile + " — " + r.message); return }
-            if (root.hasApplyIssue(r)) { root.applyResult = r; resultOverlay.visible = true; return }
+            if (root.hasApplyIssue(r)) { resultOverlay.visible = true; return }
             // benign (empty profile) or daemon unreachable — a toast is enough, no overlay
             root.showToast((r.devices && r.devices.length) ? ("Switched to " + root.curProfile)
                                                            : (root.curProfile + " — " + r.message))
@@ -487,6 +531,7 @@ Rectangle {
         property bool armed: false         // awaiting a press for this key right now
         property bool combo: false         // derived 8-way diagonal — not directly captured
         property bool isHold: false        // the Hypershift hold key (shown in the shift layer)
+        property string diff: ""           // profile-diff: ""|"same"|"changed"|"here"|"there"
         width: k.w; height: k.h
         opacity: hs.unavailable !== "" ? 0.45 : 1
         Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
@@ -550,6 +595,19 @@ Rectangle {
             anchors.fill: parent; radius: 9
             color: root.alpha(root.violet, 0.12)
             border.width: 2; border.color: root.violet
+        }
+        Rectangle {   // profile-diff tint (compare mode): green=same, amber=changed, cyan=only-here, violet=only-there
+            visible: hs.diff !== ""
+            anchors.fill: parent; radius: 9
+            color: hs.diff === "changed" ? root.alpha(root.amber, 0.14)
+                 : hs.diff === "here" ? root.alpha(root.cyan, 0.12)
+                 : hs.diff === "there" ? root.alpha(root.violet, 0.10)
+                 : root.alpha(root.green, 0.05)
+            border.width: hs.diff === "same" ? 1 : 2
+            border.color: hs.diff === "changed" ? root.amber
+                        : hs.diff === "here" ? root.cyan
+                        : hs.diff === "there" ? root.violet
+                        : root.alpha(root.green, 0.4)
         }
         Rectangle {
             id: pill
@@ -714,7 +772,7 @@ Rectangle {
                             model: backend.profileList
                             MenuItem {
                                 text: (modelData === root.curProfile ? "●  " : "      ") + modelData
-                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile(); root.deselect(); if (root.calibrating) root.exitCalibrate(); else root.applyActiveProfile() }
+                                onTriggered: { backend.setActiveProfile(modelData); root.syncProfile(); root.deselect(); if (root.compareProfile === root.curProfile) root.compareProfile = ""; if (root.calibrating) root.exitCalibrate(); else root.applyActiveProfile() }
                             }
                         }
                         MenuSeparator {}
@@ -727,6 +785,35 @@ Rectangle {
                         MenuSeparator {}
                         MenuItem { text: "🗑  Delete"; enabled: backend.profileList.length > 1
                             onTriggered: nameDialog.open("delete", "Delete profile", "") }
+                    }
+                }
+            }
+            // profile-diff: compare the active profile against another
+            Rectangle {
+                id: cmpDd
+                anchors.verticalCenter: parent.verticalCenter
+                width: cmpRow.implicitWidth + 24; height: 34; radius: 9
+                color: root.compareProfile !== "" ? root.alpha(root.cyan, 0.14) : root.panel2
+                border.width: 1; border.color: (cmpMa.containsMouse || root.compareProfile !== "") ? root.cyan : root.lineC
+                Row {
+                    id: cmpRow; anchors.centerIn: parent; spacing: 6
+                    Text { anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12; font.bold: true
+                           text: root.compareProfile !== "" ? ("vs " + root.compareProfile) : "Compare"
+                           color: root.compareProfile !== "" ? root.cyan : root.muted }
+                    Text { anchors.verticalCenter: parent.verticalCenter; text: "▾"; color: root.muted; font.pixelSize: 11 }
+                }
+                MouseArea { id: cmpMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: cmpMenu.open() }
+                Menu {
+                    id: cmpMenu; y: cmpDd.height + 4
+                    MenuItem { text: "Off"; onTriggered: root.compareProfile = "" }
+                    MenuSeparator {}
+                    Repeater {
+                        model: backend.profileList
+                        MenuItem {
+                            enabled: modelData !== root.curProfile
+                            text: (modelData === root.compareProfile ? "●  " : "      ") + modelData
+                            onTriggered: root.compareProfile = modelData
+                        }
                     }
                 }
             }
@@ -800,6 +887,14 @@ Rectangle {
                 text: root.boundCount + " bound" + (root.conflictKeys.length > 0
                       ? " · " + root.conflictKeys.length + " share an output" : "")
                 color: root.conflictKeys.length > 0 ? root.amber : root.muted
+            }
+            Text {   // honest health from the last apply: what's live, what got dropped
+                visible: root.applyHealth !== null && !root.lighting
+                anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 12
+                text: root.applyHealth ? ("✓ " + root.applyHealth.live + " live"
+                      + (root.applyHealth.dropped > 0 ? " · ⚠ " + root.applyHealth.dropped + " dropped" : "")
+                      + (root.applyHealth.failed > 0 ? " · ✕ " + root.applyHealth.failed + " not applied" : "")) : ""
+                color: (root.applyHealth && (root.applyHealth.dropped > 0 || root.applyHealth.failed > 0)) ? root.amber : root.green
             }
             Text { visible: !root.lighting; text: "Preset: " + backend.presetNameFor(root.curProfile); color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             Text { visible: root.lighting; text: "Lighting: " + root.lightLabel() + " · " + Math.round(root.lightBright) + "%"; color: root.green; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
@@ -1279,6 +1374,29 @@ Rectangle {
                 }
             }
 
+            // profile-diff legend — colour key while comparing (drops below the shift banner if both show)
+            Rectangle {
+                visible: root.compareProfile !== "" && root.compareProfile !== root.curProfile
+                         && !root.aligning && !root.calibrating && !root.lighting
+                anchors { top: parent.top; horizontalCenter: parent.horizontalCenter
+                          topMargin: root.bindLayer === "shift" ? 56 : 14 }
+                z: 3
+                width: cmpLegend.implicitWidth + 26; height: 34; radius: 10
+                color: Qt.rgba(0.05, 0.07, 0.086, 0.94); border.width: 1; border.color: root.cyan
+                Row {
+                    id: cmpLegend; anchors.centerIn: parent; spacing: 13
+                    Text { text: "vs " + root.compareProfile; color: "#bfe9fb"; font.pixelSize: 12; font.bold: true; anchors.verticalCenter: parent.verticalCenter }
+                    Repeater {
+                        model: [{ c: root.amber, t: "changed" }, { c: root.cyan, t: "only here" }, { c: root.violet, t: "only there" }]
+                        Row {
+                            spacing: 5; anchors.verticalCenter: parent.verticalCenter
+                            Rectangle { width: 8; height: 8; radius: 2; color: modelData.c; anchors.verticalCenter: parent.verticalCenter }
+                            Text { text: modelData.t; color: root.muted2; font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter }
+                        }
+                    }
+                }
+            }
+
             // align bar
             Rectangle {
                 visible: root.aligning
@@ -1381,6 +1499,7 @@ Rectangle {
                             armed: root.armedKey === modelData.id
                             combo: modelData.combo ? true : false
                             isHold: root.bindLayer === "shift" && root.holdKey === modelData.id
+                            diff: root.diffState(modelData.id)
                         }
                     }
                 }

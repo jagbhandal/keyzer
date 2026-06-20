@@ -468,13 +468,20 @@ Rectangle {
     Connections {
         target: backend
         function onLightingDevicesReady(snap) { root.onLightingReady(snap) }
-        function onLightingOpFailed(msg) { root.showToast(msg || "lighting failed") }
+        function onLightingOpFailed(msg) {
+            root.showToast(msg || "lighting failed")
+            // a failed sync/brightness op left the optimistic toggle/slider ahead of
+            // hardware truth — re-query so onLightingReady snaps them back.
+            if (root.lighting) backend.requestLightingDevices()
+        }
         function onApplyFinished(report, tag) {
             root.applying = false
             if (tag !== "") {                        // a per-bind apply (applyBinding/clearBinding)
                 root.mergeApplyResult(report)        // keep the footer health current
                 var warn = root.bindWarning(report, tag)   // did THIS bind get dropped server-side?
                 if (warn) root.showToast("⚠ not applied — " + warn)
+                else if (!report.ok && (!report.devices || !report.devices.length))
+                    root.showToast(report.message || "not pushed live")   // wholesale failure (e.g. daemon down)
                 return
             }
             // a full-profile apply (profile switch)

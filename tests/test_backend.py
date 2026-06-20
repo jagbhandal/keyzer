@@ -396,6 +396,16 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
         for d in r["devices"]:
             self.assertEqual(d["dev"], "naga")
 
+    def test_apply_payload_is_decoupled_from_live_profiles(self):
+        # The worker must not iterate the live profile dict the GUI mutates. The payload
+        # is a fresh snapshot — a later GUI edit can't change it (no cross-thread race).
+        b = self.new_backend()
+        b.setBinding("Gaming", "naga", "NAGA_01", "Copy")
+        payload = b._apply_payload("Gaming", "naga")
+        self.assertIsNot(payload["binds"]["naga"], b._profiles["Gaming"]["naga"])  # fresh dict
+        b.setBinding("Gaming", "naga", "NAGA_01", "Paste")   # GUI mutation after snapshot
+        self.assertEqual(payload["binds"]["naga"]["NAGA_01"], "Copy")   # snapshot pinned to click-time
+
     def test_apply_worker_lifecycle(self):
         b = self.new_backend()
         b.startApplyWorker()
@@ -411,7 +421,7 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
             "naga": {"ok": True, "count": 2, "warnings": [], "error": None}}
         try:
             b = self.new_backend()
-            report = b._apply_run("Gaming", "naga")
+            report = b._apply_run(b._apply_payload("Gaming", "naga"))
             self.assertEqual(b.liveStatus, {})          # run alone leaves _live untouched
             b._apply_commit("Gaming", report)
             self.assertEqual(b.liveStatus.get("naga"), "Gaming")

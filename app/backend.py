@@ -704,32 +704,21 @@ class Backend(QObject):
         freeze the UI for up to ~40s on every bind edit / profile switch. The UI-shaped
         report is delivered on applyFinished(report, tag); ``tag`` lets the caller
         correlate the result (e.g. the edited hotspot id)."""
+        payload = self._apply_payload(profile, dev)   # snapshot binds on the GUI thread
         if self._demo or self._apply_worker is None:
             # demo (instant, no subprocess) or no worker (tests) -> run inline
-            report = self._apply_run(profile, dev)
+            report = self._apply_run(payload)
             self._apply_commit(profile, report)
             self.applyFinished.emit(report, tag)
             return
-        self._apply_worker.submit(lambda: self._apply_async(profile, dev, tag))
+        self._apply_worker.submit(lambda: self._apply_async(profile, payload, tag))
 
-    def _apply_async(self, profile: str, dev: str, tag: str) -> None:
-        # worker thread: do the slow subprocess apply, then hop to the GUI thread to
-        # reconcile _live (read by liveStatus) and emit the result.
-        report = self._apply_run(profile, dev)
-        QMetaObject.invokeMethod(self, "_onApplyDone", Qt.QueuedConnection,
-                                 Q_ARG(str, profile), Q_ARG(str, tag), Q_ARG("QVariant", report))
-
-    @Slot(str, str, "QVariant")
-    def _onApplyDone(self, profile: str, tag: str, report) -> None:
-        self._apply_commit(profile, report)
-        self.applyFinished.emit(report, tag)
-
-    def _apply_run(self, profile: str, dev: str = "") -> dict:
-        """Build + load the preset (the slow input-remapper subprocess work) and return
-        a UI-shaped report. Pure w.r.t. KEYZER state — does NOT touch _live (the GUI
-        commits that in _apply_commit), so it is safe to run on the apply worker."""
-        # only push bindable hotspots that exist (drops orphans + unavailable
-        # controls; thumb-pad diagonals are handled via combos).
+    def _apply_payload(self, profile: str, dev: str = "") -> dict:
+        """Snapshot the bindable binds + Hypershift maps for a profile — built on the
+        GUI thread so the worker never iterates the live self._profiles/_shift/_shiftKeys
+        the GUI mutates (a cross-thread 'dict changed size during iteration'). _bindable
+        produces fresh dicts, so the worker only ever touches its own payload. Also pins
+        the apply to the state at click time, independent of later edits."""
         prof = self._profiles.get(profile)
         if prof is None:
             src = {}                            # unknown profile -> nothing to apply
@@ -740,6 +729,28 @@ class Backend(QObject):
             # leaves a device unbound reverts it rather than leaving the old one live.
             src = {d: prof.get(d, {}) for d in self._layouts}
         binds = {d: self._bindable(d, b) for d, b in src.items()}
+        shift = {d: self._bindable(d, (self._shift.get(profile) or {}).get(d)) for d in binds}
+        shift_keys = {d: (self._shiftKeys.get(profile) or {}).get(d, "") for d in binds}
+        return {"profile": profile, "binds": binds, "shift": shift, "shift_keys": shift_keys}
+
+    def _apply_async(self, profile: str, payload: dict, tag: str) -> None:
+        # worker thread: do the slow subprocess apply, then hop to the GUI thread to
+        # reconcile _live (read by liveStatus) and emit the result.
+        report = self._apply_run(payload)
+        QMetaObject.invokeMethod(self, "_onApplyDone", Qt.QueuedConnection,
+                                 Q_ARG(str, profile), Q_ARG(str, tag), Q_ARG("QVariant", report))
+
+    @Slot(str, str, "QVariant")
+    def _onApplyDone(self, profile: str, tag: str, report) -> None:
+        self._apply_commit(profile, report)
+        self.applyFinished.emit(report, tag)
+
+    def _apply_run(self, payload: dict) -> dict:
+        """Build + load the preset (the slow input-remapper subprocess work) from a
+        pre-snapshotted payload and return a UI-shaped report. Worker-safe: touches only
+        the payload + immutable-after-init state (_layouts/_combos/_demo); does NOT read
+        the live profile dicts, nor _live (the GUI commits that in _apply_commit)."""
+        profile, binds = payload["profile"], payload["binds"]
         if self._demo:
             devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
                         "ok": True, "count": len(b), "warnings": [], "error": None}
@@ -748,15 +759,12 @@ class Backend(QObject):
                 return {"ok": False, "message": "Nothing to apply for this profile.", "devices": []}
             total = sum(x["count"] for x in devices)
             return {"ok": True, "message": f"{total} bindings live (demo).", "devices": devices}
-        # Hypershift layer 2 — same bindable filter, plus the per-device hold key.
-        shift = {d: self._bindable(d, (self._shift.get(profile) or {}).get(d)) for d in binds}
-        shift_keys = {d: (self._shiftKeys.get(profile) or {}).get(d, "") for d in binds}
         # Apply always persists: the preset is injected now AND registered with
         # input-remapper's autoload so it survives a reboot/replug. Stop is the
         # only "turn it off" — there is no reset-on-restart mode.
         report = engine.apply_profile(profile, binds, engine.load_captures(),
                                       autoload=True, combos=self._combos,
-                                      shift=shift, shift_keys=shift_keys)
+                                      shift=payload["shift"], shift_keys=payload["shift_keys"])
         if "_error" in report:
             return {"ok": False, "message": report["_error"], "devices": []}
         devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
@@ -784,9 +792,9 @@ class Backend(QObject):
         self.liveChanged.emit()
 
     def _apply_sync(self, profile: str, dev: str = "") -> dict:
-        """Synchronous apply (run + commit) returning the report — used by tests and by
-        the inline (demo / no-worker) path."""
-        report = self._apply_run(profile, dev)
+        """Synchronous apply (snapshot + run + commit) returning the report — used by
+        tests and by the inline (demo / no-worker) path."""
+        report = self._apply_run(self._apply_payload(profile, dev))
         self._apply_commit(profile, report)
         return report
 

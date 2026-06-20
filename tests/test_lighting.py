@@ -174,5 +174,23 @@ class BrightnessTests(_LightingTest):
         lighting.set_brightness("naga", 42); self.assertEqual(dev.brightness, 42.0)
 
 
+class ManagerCacheTests(unittest.TestCase):
+    """_manager() reuses one DeviceManager (building it blocks ~25s when the daemon is
+    down); _reset_manager() drops it so a daemon restart rebuilds."""
+
+    def test_reuses_cached_manager_and_resets(self):
+        saved = lighting._MGR
+        sentinel = object()
+        try:
+            lighting._MGR = sentinel
+            mgr, err = lighting._manager()
+            self.assertIs(mgr, sentinel)     # reused — no rebuild (no ~25s DBus call)
+            self.assertIsNone(err)
+            lighting._reset_manager()
+            self.assertIsNone(lighting._MGR)  # next _manager() will rebuild
+        finally:
+            lighting._MGR = saved
+
+
 if __name__ == "__main__":
     unittest.main()

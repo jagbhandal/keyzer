@@ -34,16 +34,36 @@ def available() -> bool:
     return importlib.util.find_spec("openrazer") is not None
 
 
+# One cached DeviceManager, reused across calls (building it enumerates devices over
+# DBus and blocks ~25s when the daemon is down). Reset on any error so a daemon
+# restart — which leaves the cached proxies pointing at the old name owner — rebuilds.
+# SINGLE-THREADED: only KEYZER's lighting worker thread touches this (the GUI never
+# calls into this module), so no lock is needed.
+_MGR = None
+
+
 def _manager():
-    """(DeviceManager, None) or (None, error-string) — never raises."""
+    """(DeviceManager, None) or (None, error-string) — never raises. Reuses a cached
+    manager; call _reset_manager() to force a rebuild after a daemon error."""
+    global _MGR
+    if _MGR is not None:
+        return _MGR, None
     try:
         from openrazer.client import DeviceManager
     except Exception as exc:  # not installed / import error
         return None, f"OpenRazer unavailable: {exc}"
     try:
-        return DeviceManager(), None
+        _MGR = DeviceManager()
     except Exception as exc:  # daemon not running / DBus unreachable
         return None, f"OpenRazer daemon not reachable: {exc}"
+    return _MGR, None
+
+
+def _reset_manager() -> None:
+    """Drop the cached manager so the next _manager() rebuilds it (after a DBus error
+    or a daemon restart left it stale)."""
+    global _MGR
+    _MGR = None
 
 
 def _match(dev, spec) -> bool:
@@ -108,6 +128,7 @@ def devices() -> dict:
                 "zones": _zones(dev),
             }
         except Exception as exc:
+            _reset_manager()   # device went away / proxy stale -> rebuild next call
             out[kid] = {"_error": str(exc)}
     return out
 
@@ -120,6 +141,7 @@ def sync_enabled() -> bool:
     try:
         return bool(mgr.sync_effects)
     except Exception:
+        _reset_manager()
         return False
 
 
@@ -133,6 +155,7 @@ def set_sync(enabled: bool) -> dict:
     try:
         mgr.sync_effects = bool(enabled)
     except Exception as exc:
+        _reset_manager()
         return {"ok": False, "error": str(exc)}
     return {"ok": True}
 
@@ -149,6 +172,7 @@ def set_brightness(kid: str, pct: float) -> dict:
     try:
         dev.brightness = max(0.0, min(100.0, float(pct)))
     except Exception as exc:
+        _reset_manager()
         return {"ok": False, "error": str(exc)}
     return {"ok": True}
 
@@ -198,5 +222,6 @@ def set_effect(kid: str, effect: str, color=(68, 214, 44), color2=(34, 200, 255)
         else:
             return {"ok": False, "error": f"unknown effect '{effect}'"}
     except Exception as exc:  # any daemon/DBus hiccup must never crash the UI
+        _reset_manager()
         return {"ok": False, "error": str(exc)}
     return {"ok": True}

@@ -11,12 +11,14 @@ import copy
 import importlib.util
 import json
 import os
+import queue
 import shutil
 import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import (Property, QMetaObject, QObject, Qt, QThread, QTimer,
+                            Q_ARG, Signal, Slot)
 from PySide6.QtGui import QGuiApplication
 
 import engine
@@ -37,33 +39,50 @@ _DEMO_LIGHTING = {"error": None, "devices": [
      "error": None}]}
 
 
-class _LightingWatcher(threading.Thread):
-    """Polls for Razer device (re)connections off the GUI thread and re-applies
-    KEYZER's saved look when one returns — devices forget software-set Chroma
-    effects on unplug/power loss, and OpenRazer can't read the effect back.
+class _LightingWorker(threading.Thread):
+    """The SINGLE owner of all OpenRazer access, off the GUI thread. Building/using a
+    DeviceManager blocks ~25s when the daemon is down, so no lighting call may run on
+    the event loop. The GUI enqueues commands (query / effect / brightness / sync);
+    between commands the worker polls for device (re)connections to re-apply saved
+    looks (devices forget software-set effects on unplug, and OpenRazer can't read
+    them back). The command runner marshals results back to the GUI thread. Because
+    this is the only thread that touches the cached DeviceManager, no lock is needed.
 
-    A daemon thread (NOT a QThread): it touches no Qt objects, and creating an
-    OpenRazer DeviceManager can block ~25s when the daemon is unreachable, so the
-    thread must be abandonable at exit. A daemon thread is killed with the process
-    even when mid-DBus-call, with none of the 'QThread: Destroyed while thread is
-    still running' teardown abort a blocked QThread would cause."""
+    A daemon thread (NOT a QThread): it must be abandonable at exit even when blocked
+    mid-DBus, with none of the 'QThread: Destroyed while thread is still running'
+    teardown abort a blocked QThread would cause."""
 
-    def __init__(self, poll, interval_ms: int = 4000):
+    def __init__(self, poll, run_cmd, interval_ms: int = 4000):
         super().__init__(daemon=True)
-        self._poll = poll                       # one tick (Backend._lighting_poll)
+        self._poll = poll                       # idle tick (Backend._lighting_poll)
+        self._run_cmd = run_cmd                  # execute one queued command
         self._interval = interval_ms / 1000.0
+        self._q: "queue.Queue" = queue.Queue()
         self._stop = threading.Event()
+
+    def submit(self, cmd) -> None:
+        self._q.put(cmd)
 
     def stop(self) -> None:
         self._stop.set()
+        self._q.put(None)   # unblock a waiting get()
 
     def run(self) -> None:
         while not self._stop.is_set():
             try:
-                self._poll()
+                cmd = self._q.get(timeout=self._interval)
+            except queue.Empty:
+                try:
+                    self._poll()           # no commands pending -> reconnect check
+                except Exception:
+                    pass                   # a watcher hiccup must never crash the app
+                continue
+            if cmd is None:
+                continue
+            try:
+                self._run_cmd(cmd)
             except Exception:
-                pass   # a watcher hiccup must never crash the app
-            self._stop.wait(self._interval)   # interruptible inter-poll wait
+                pass                       # one bad command must not kill the worker
 
 
 class _CaptureWorker(QThread):
@@ -217,6 +236,8 @@ class Backend(QObject):
     keyCaptured = Signal(str, str, str)   # in-app calibration: dev, hotspot, label
     calibrationChanged = Signal()         # a calibration session started/ended
     calibrationError = Signal(str)
+    lightingDevicesReady = Signal("QVariant")   # async lighting query result {error,devices,sync}
+    lightingOpFailed = Signal(str)              # a lighting op failed -> toast
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -248,8 +269,8 @@ class Backend(QObject):
         self._light_lock = threading.Lock()
         # mirror of the persisted looks the watcher reads off-thread (see _remember_look)
         self._light_looks = dict(self._settings.get("lightState") or {})
-        self._light_seen = set()   # devices present on the last poll (watcher-thread only)
-        self._light_watcher = None  # background reconnect/startup watcher; started from main.py
+        self._light_seen = set()   # devices present on the last poll (worker-thread only)
+        self._light_worker = None  # background lighting worker; started from main.py
 
     def _load_profiles(self) -> None:
         """Restore saved profiles, or seed the defaults on first run."""
@@ -730,33 +751,35 @@ class Backend(QObject):
             self.liveChanged.emit()
         return {"ok": ok, "error": None if ok else "couldn't reach the service"}
 
-    # ----- lighting (optional, OpenRazer) -----
-    @Slot(result="QVariant")
-    def lightingDevices(self) -> dict:
-        """Connected, lightable devices (or an error) for the lighting panel."""
+    # ----- lighting (optional, OpenRazer) — all hardware access is off the GUI thread
+    # on the _LightingWorker; the GUI only enqueues and reacts to signals, because
+    # building/using a DeviceManager blocks ~25s when the daemon is down. -----
+    @Slot()
+    def requestLightingDevices(self) -> None:
+        """Ask the worker for the connected, lightable devices; the result arrives on
+        lightingDevicesReady. Never blocks the UI (a down daemon would otherwise freeze
+        the panel ~25s on open)."""
         if self._demo:
-            return _DEMO_LIGHTING
-        d = lighting.devices()
-        if "_error" in d:
-            return {"error": d["_error"], "devices": []}
-        devs = [{"id": k, "name": v.get("name", k), "brightness": v.get("brightness", 100),
-                 "effects": v.get("effects", []), "zones": v.get("zones", []),
-                 "error": v.get("_error")}
-                for k, v in d.items()]
-        return {"error": None, "devices": devs}
+            self.lightingDevicesReady.emit({**_DEMO_LIGHTING, "sync": False})
+            return
+        if self._light_worker is None:
+            self.lightingDevicesReady.emit({"error": "lighting unavailable", "devices": [], "sync": False})
+            return
+        self._light_worker.submit(("query", None))
 
-    @Slot(str, str, int, int, int, str, str, int, result="QVariant")
+    @Slot(str, str, int, int, int, str, str, int)
     def setLightEffect(self, dev: str, effect: str, r: int, g: int, b: int, zone: str,
-                       direction: str = "left", react_ms: int = 1000) -> dict:
+                       direction: str = "left", react_ms: int = 1000) -> None:
+        """Record the chosen look (so it survives a restart and is replayed on
+        reconnect — OpenRazer can't read effects back) then apply it to hardware off
+        the GUI thread. Fire-and-forget: a failure surfaces via lightingOpFailed."""
         if self._demo:
-            return {"ok": True}
-        res = lighting.set_effect(dev, effect, (r, g, b), zone=zone,
-                                  direction=direction, react_ms=react_ms)
-        if isinstance(res, dict) and res.get("ok"):
-            # OpenRazer can't read the effect back, so record what we applied —
-            # this is what survives a restart and gets replayed on reconnect.
-            self._remember_look(dev, zone, effect, r, g, b, direction, react_ms)
-        return res
+            return
+        self._remember_look(dev, zone, effect, r, g, b, direction, react_ms)
+        if self._light_worker is not None:
+            self._light_worker.submit(("effect", {"dev": dev, "effect": effect, "r": r,
+                                                  "g": g, "b": b, "zone": zone,
+                                                  "direction": direction, "react_ms": react_ms}))
 
     @Slot(result="QVariant")
     def lightState(self) -> dict:
@@ -830,43 +853,86 @@ class Backend(QObject):
             except Exception:
                 pass   # one device's failure must never starve the others' re-apply
 
+    def _lighting_snapshot(self) -> dict:
+        """{error, devices:[...], sync} for the panel — built on the worker thread
+        (reuses the cached DeviceManager; sync_enabled() reuses it, no second build)."""
+        d = lighting.devices()
+        if not isinstance(d, dict):
+            return {"error": "lighting unavailable", "devices": [], "sync": False}
+        if "_error" in d:
+            return {"error": d["_error"], "devices": [], "sync": False}
+        devs = [{"id": k, "name": v.get("name", k), "brightness": v.get("brightness", 100),
+                 "effects": v.get("effects", []), "zones": v.get("zones", []),
+                 "error": v.get("_error")}
+                for k, v in d.items()]
+        return {"error": None, "devices": devs, "sync": bool(lighting.sync_enabled())}
+
+    def _run_light_cmd(self, cmd) -> None:
+        """Execute one queued lighting command on the worker thread, then marshal any
+        result/error back to the GUI thread via _deliverLighting (a queued call)."""
+        kind, arg = cmd
+        if kind == "query":
+            self._deliver_light("devices", self._lighting_snapshot())
+            return
+        if kind == "effect":
+            r = lighting.set_effect(arg["dev"], arg["effect"], (arg["r"], arg["g"], arg["b"]),
+                                    zone=arg["zone"], direction=arg["direction"], react_ms=arg["react_ms"])
+        elif kind == "brightness":
+            r = lighting.set_brightness(arg["dev"], arg["pct"])
+        elif kind == "sync":
+            r = lighting.set_sync(arg["enabled"])
+        else:
+            return
+        if not (isinstance(r, dict) and r.get("ok")):
+            self._deliver_light("error", {"error": (r or {}).get("error") or "lighting failed"})
+
+    def _deliver_light(self, kind: str, payload: dict) -> None:
+        # hop from the worker thread to the GUI thread (queued) to emit Qt signals
+        QMetaObject.invokeMethod(self, "_deliverLighting", Qt.QueuedConnection,
+                                 Q_ARG(str, kind), Q_ARG("QVariant", payload))
+
+    @Slot(str, "QVariant")
+    def _deliverLighting(self, kind: str, payload) -> None:
+        """Runs on the GUI thread: turn a worker result into a Qt signal QML reacts to."""
+        if kind == "devices":
+            self.lightingDevicesReady.emit(payload)
+        elif kind == "error":
+            self.lightingOpFailed.emit((payload or {}).get("error", "lighting failed"))
+
     @Slot()
     def startLightingWatcher(self) -> None:
-        """Begin watching for device (re)connections (and run the startup re-apply).
-        Called from main.py once the UI is up — never in demo or without OpenRazer."""
-        if self._demo or self._light_watcher is not None or not lighting.available():
+        """Start the lighting worker: it runs the startup re-apply, watches for device
+        (re)connections, and serves the GUI's lighting commands — all off the GUI
+        thread. Called from main.py once the UI is up; never in demo or without
+        OpenRazer."""
+        if self._demo or self._light_worker is not None or not lighting.available():
             return
-        self._light_watcher = _LightingWatcher(
-            lambda: self._lighting_poll(settle_ms=400), interval_ms=4000)
-        self._light_watcher.start()
+        self._light_worker = _LightingWorker(
+            lambda: self._lighting_poll(settle_ms=400), self._run_light_cmd, interval_ms=4000)
+        self._light_worker.start()
 
     @Slot()
     def shutdownLighting(self) -> None:
-        """App is quitting — stop the watcher. Wired to QGuiApplication.aboutToQuit in
-        main.py (mirrors shutdownCalibration). Best-effort join: a mid-poll blocked
+        """App is quitting — stop the worker. Wired to QGuiApplication.aboutToQuit in
+        main.py (mirrors shutdownCalibration). Best-effort join: a command blocked
         ~25s on a down daemon won't hold up exit — it's a daemon thread."""
-        w = self._light_watcher
+        w = self._light_worker
         if w is not None:
             w.stop()
             w.join(timeout=1.0)
-            self._light_watcher = None
+            self._light_worker = None
 
-    @Slot(str, int, result="QVariant")
-    def setLightBrightness(self, dev: str, pct: int) -> dict:
-        if self._demo:
-            return {"ok": True}
-        return lighting.set_brightness(dev, pct)
+    @Slot(str, int)
+    def setLightBrightness(self, dev: str, pct: int) -> None:
+        if self._demo or self._light_worker is None:
+            return
+        self._light_worker.submit(("brightness", {"dev": dev, "pct": pct}))
 
-    @Slot(result=bool)
-    def lightingSync(self) -> bool:
-        """Whether OpenRazer is mirroring effects across all Chroma devices."""
-        return False if self._demo else lighting.sync_enabled()
-
-    @Slot(bool, result="QVariant")
-    def setLightingSync(self, enabled: bool) -> dict:
-        if self._demo:
-            return {"ok": True}
-        return lighting.set_sync(enabled)
+    @Slot(bool)
+    def setLightingSync(self, enabled: bool) -> None:
+        if self._demo or self._light_worker is None:
+            return
+        self._light_worker.submit(("sync", {"enabled": enabled}))
 
     # ----- align / copy-layout -----
     @Slot(str)

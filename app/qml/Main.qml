@@ -85,8 +85,9 @@ Rectangle {
     function applyLighting(patch) {   // merge one change into the current look, push it live, record it
         var s = Object.assign({}, curLight(), patch)
         if (!s.effect) s.effect = "static"   // a colour/param change before an effect is picked -> Solid
-        var r = backend.setLightEffect(curDev, s.effect, s.r, s.g, s.b, lightZone, s.direction, s.react_ms)
-        if (!r.ok) { showToast(r.error || "lighting failed"); return }
+        // optimistic: update the preview + record now; the hardware call runs off the
+        // GUI thread and a failure comes back via onLightingOpFailed (a toast).
+        backend.setLightEffect(curDev, s.effect, s.r, s.g, s.b, lightZone, s.direction, s.react_ms)
         var m = Object.assign({}, lightState); m[lightKey()] = s; lightState = m
         showToast(lightLabel() + " → " + effectLabel(s.effect))
     }
@@ -126,7 +127,15 @@ Rectangle {
     function zoneLabel(z) { var zs = lightZonesFor(); for (var i = 0; i < zs.length; i++) if (zs[i].name === z) return zs[i].label; return z }
     function curZoneEffects() { var zs = lightZonesFor(); for (var i = 0; i < zs.length; i++) if (zs[i].name === lightZone) return zs[i].effects || []; return [] }
     function lightLabel() { var d = lightDev(); return (d ? d.name : curDev) + (lightZone ? " · " + zoneLabel(lightZone) : "") }
-    function enterLighting() { lightInfo = backend.lightingDevices(); lightZone = ""; lcWheel = false; var d = lightDev(); lightBright = d ? d.brightness : 100; lightSync = backend.lightingSync(); syncWheelToLook() }
+    // Querying OpenRazer can block ~25s when the daemon is down, so the panel asks
+    // the backend worker (off the GUI thread) and fills in on lightingDevicesReady.
+    function enterLighting() { lightInfo = { error: null, devices: [], checking: true }; lightZone = ""; lcWheel = false; syncWheelToLook(); backend.requestLightingDevices() }
+    function onLightingReady(snap) {   // the async query came back — populate the panel
+        lightInfo = snap || { error: null, devices: [] }
+        lightSync = snap && snap.sync === true
+        var d = lightDev(); lightBright = d ? d.brightness : 100
+        syncWheelToLook()
+    }
     function syncLightDevice() { if (lighting) { lightZone = ""; var d = lightDev(); lightBright = d ? d.brightness : 100; syncWheelToLook() } }
     function selectLightZone(z) { lightZone = z; syncWheelToLook() }   // pick a zone + show its saved colour
     // move the custom-colour wheel + value to a given colour (greys keep the wheel angle)
@@ -138,7 +147,7 @@ Rectangle {
     // move the wheel to the current look's colour, so the picker shows the saved
     // colour (not a fixed default) after a restart / device / zone switch
     function syncWheelToLook() { var s = curLight(); setWheelRGB(s.r, s.g, s.b) }
-    function setLightBright(pct) { var r = backend.setLightBrightness(curDev, Math.round(pct)); if (!r.ok) showToast(r.error || "brightness failed") }
+    function setLightBright(pct) { backend.setLightBrightness(curDev, Math.round(pct)) }   // async; errors -> onLightingOpFailed
     function pickLightWheel(mx, my) { var dx = mx - 75, dy = my - 75; lcS = Math.max(0, Math.min(1, Math.sqrt(dx * dx + dy * dy) / 72)); lcH = (Math.atan2(dy, dx) / (2 * Math.PI) + 1) % 1 }
     function hex2(c) { var h = Math.round(c * 255).toString(16); return h.length < 2 ? "0" + h : h }
     function curHex() { return "#" + hex2(lcColor.r) + hex2(lcColor.g) + hex2(lcColor.b) }
@@ -467,6 +476,8 @@ Rectangle {
     // live calibration: each physical press the worker captures lands here
     Connections {
         target: backend
+        function onLightingDevicesReady(snap) { root.onLightingReady(snap) }
+        function onLightingOpFailed(msg) { root.showToast(msg || "lighting failed") }
         function onKeyCaptured(dev, hotspot, label) {
             if (!root.calibrating || dev !== root.curDev) return
             if (backend.demo) {   // simulated capture — track in memory (no disk), no auto-advance
@@ -1076,12 +1087,14 @@ Rectangle {
                     Text {
                         visible: root.lightDev() === null
                         width: parent.width; wrapMode: Text.WordWrap; color: root.muted; font.pixelSize: 12; lineHeight: 1.35
-                        text: root.lightInfo.error
-                              ? ("OpenRazer: " + root.lightInfo.error)
-                              : ("No lighting for " + (root.device ? root.device.name : root.curDev) + " — is the OpenRazer daemon running and are you in the 'plugdev' group?")
+                        text: root.lightInfo.checking
+                              ? "Checking OpenRazer…"
+                              : root.lightInfo.error
+                                ? ("OpenRazer: " + root.lightInfo.error)
+                                : ("No lighting for " + (root.device ? root.device.name : root.curDev) + " — is the OpenRazer daemon running and are you in the 'plugdev' group?")
                     }
                     Rectangle {   // Recheck (re-query OpenRazer)
-                        visible: root.lightDev() === null
+                        visible: root.lightDev() === null && !root.lightInfo.checking
                         width: rcT.implicitWidth + 24; height: 28; radius: 7; color: root.panel2; border.width: 1; border.color: root.lineC
                         Text { id: rcT; anchors.centerIn: parent; text: "↻ Recheck"; color: root.txt; font.pixelSize: 12 }
                         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.enterLighting() }
@@ -1275,8 +1288,8 @@ Rectangle {
                         Rectangle { width: parent.width; height: 1; color: root.lineC }
                         FlatSwitch {
                             label: "Sync all devices"; on: root.lightSync
-                            onToggled: { var r = backend.setLightingSync(!root.lightSync)
-                                if (r.ok) root.lightSync = !root.lightSync; else root.showToast(r.error || "sync failed") }
+                            onToggled: { root.lightSync = !root.lightSync   // optimistic; errors -> onLightingOpFailed
+                                backend.setLightingSync(root.lightSync) }
                         }
                         Text { width: parent.width; wrapMode: Text.WordWrap; color: root.muted2; font.pixelSize: 10
                             text: root.lightSync ? "One look mirrors to every Razer device." : "Each device is controlled on its own." }

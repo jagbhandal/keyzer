@@ -580,14 +580,19 @@ class DemoModeTests(_IsolatedBackendTest):
         self.assertEqual(self.b.liveStatus, {})
 
     def test_lighting_devices_are_sampled(self):
-        d = self.b.lightingDevices()
-        self.assertIsNone(d["error"])
-        self.assertEqual({x["id"] for x in d["devices"]}, {"tartarus", "naga"})
+        got = []
+        self.b.lightingDevicesReady.connect(lambda snap: got.append(snap))
+        self.b.requestLightingDevices()          # demo -> emits the sample set synchronously
+        self.assertEqual(len(got), 1)
+        self.assertIsNone(got[0]["error"])
+        self.assertEqual({x["id"] for x in got[0]["devices"]}, {"tartarus", "naga"})
 
-    def test_light_setters_succeed(self):
-        self.assertTrue(self.b.setLightEffect("naga", "static", 1, 2, 3, "")["ok"])
-        self.assertTrue(self.b.setLightBrightness("naga", 50)["ok"])
-        self.assertTrue(self.b.setLightingSync(True)["ok"])
+    def test_light_setters_are_noops_in_demo(self):
+        # demo setters must not raise, not touch hardware, and persist nothing
+        self.b.setLightEffect("naga", "static", 1, 2, 3, "")
+        self.b.setLightBrightness("naga", 50)
+        self.b.setLightingSync(True)
+        self.assertEqual(self.b.lightState(), {})
 
     def test_demo_persists_nothing_to_disk(self):
         # A demo built in demo from the start must never write profiles.json — not on
@@ -672,8 +677,11 @@ class _FakeLighting:
 
     def __init__(self):
         self.applied = []        # (dev, effect, color, zone, direction, react_ms) in call order
+        self.brightness_calls = []   # (dev, pct)
+        self.sync_calls = []         # enabled bools
         self.present = {}         # what devices() returns; matches lighting.devices() shape
         self.available_flag = True
+        self.sync = False         # mgr.sync_effects mirror
         self.fail = False         # make set_effect report failure
         self.raise_for = set()    # dev ids whose set_effect raises (a transient OpenRazer error)
 
@@ -682,6 +690,9 @@ class _FakeLighting:
 
     def devices(self):
         return dict(self.present)
+
+    def sync_enabled(self):
+        return self.sync
 
     def set_effect(self, dev, effect, color=(68, 214, 44), color2=(34, 200, 255),
                    *, direction="left", react_ms=1000, zone=""):
@@ -692,6 +703,15 @@ class _FakeLighting:
         self.applied.append((dev, effect, tuple(color), zone, direction, react_ms))
         return {"ok": True}
 
+    def set_brightness(self, dev, pct):
+        self.brightness_calls.append((dev, pct))
+        return {"ok": True}
+
+    def set_sync(self, enabled):
+        self.sync_calls.append(enabled)
+        self.sync = bool(enabled)
+        return {"ok": True}
+
 
 class _LightingBackendTest(_IsolatedBackendTest):
     """Isolated backend + the lighting module swapped for a recording fake."""
@@ -700,10 +720,14 @@ class _LightingBackendTest(_IsolatedBackendTest):
         super().setUp()
         self.fake = _FakeLighting()
         self._saved_light = {n: getattr(lighting, n)
-                             for n in ("available", "devices", "set_effect")}
+                             for n in ("available", "devices", "set_effect",
+                                       "set_brightness", "set_sync", "sync_enabled")}
         lighting.available = self.fake.available
         lighting.devices = self.fake.devices
         lighting.set_effect = self.fake.set_effect
+        lighting.set_brightness = self.fake.set_brightness
+        lighting.set_sync = self.fake.set_sync
+        lighting.sync_enabled = self.fake.sync_enabled
 
     def tearDown(self):
         for n, v in self._saved_light.items():
@@ -717,10 +741,7 @@ class LightingPersistenceTests(_LightingBackendTest):
 
     def test_set_effect_records_and_persists_across_restart(self):
         b1 = self.new_backend()
-        r = b1.setLightEffect("naga", "static", 10, 20, 30, "")
-        self.assertTrue(r["ok"])
-        self.assertEqual(self.fake.applied[-1],
-                         ("naga", "static", (10, 20, 30), "", "left", 1000))
+        b1.setLightEffect("naga", "static", 10, 20, 30, "")   # records; hw apply is async
         self.assertEqual(b1.lightState(), {"naga|": {
             "effect": "static", "r": 10, "g": 20, "b": 30,
             "direction": "left", "react_ms": 1000}})
@@ -732,19 +753,18 @@ class LightingPersistenceTests(_LightingBackendTest):
         on_disk = json.loads(engine.PROFILES.read_text())
         self.assertEqual(on_disk["settings"]["lightState"]["naga|"]["b"], 30)
 
-    def test_failed_apply_is_not_remembered(self):
-        self.fake.fail = True
-        b = self.new_backend()
-        r = b.setLightEffect("naga", "static", 1, 2, 3, "")
-        self.assertFalse(r["ok"])
-        self.assertEqual(b.lightState(), {})   # a look that didn't take isn't recorded
+    def test_look_recorded_optimistically_without_hardware(self):
+        # Persistence is decoupled from the hardware apply: a look chosen with no
+        # worker/daemon is still recorded (so it replays on the next reconnect).
+        b = self.new_backend()                 # no worker started, no daemon
+        b.setLightEffect("naga", "static", 1, 2, 3, "")
+        self.assertEqual(b.lightState()["naga|"]["effect"], "static")
 
     def test_demo_does_not_persist_a_look(self):
         b = self.new_backend()
         b._demo = True
-        r = b.setLightEffect("naga", "static", 1, 2, 3, "")
-        self.assertTrue(r["ok"])               # demo short-circuits to ok
-        self.assertEqual(b.lightState(), {})   # ...but records/persists nothing
+        b.setLightEffect("naga", "static", 1, 2, 3, "")   # demo: a no-op
+        self.assertEqual(b.lightState(), {})   # records/persists nothing
 
 
 class LightingReapplyTests(_LightingBackendTest):
@@ -814,21 +834,48 @@ class LightingReapplyTests(_LightingBackendTest):
         b = self.new_backend()
         b._demo = True
         b.startLightingWatcher()
-        self.assertIsNone(b._light_watcher)
+        self.assertIsNone(b._light_worker)
         b._demo = False
         self.fake.available_flag = False
         b.startLightingWatcher()
-        self.assertIsNone(b._light_watcher)
-        b.shutdownLighting()   # safe to call with no watcher running
+        self.assertIsNone(b._light_worker)
+        b.shutdownLighting()   # safe to call with no worker running
 
     def test_watcher_starts_and_stops_cleanly(self):
         b = self.new_backend()
         self.fake.present = {}   # no devices -> each poll returns instantly, no DBus, no delay
         b.startLightingWatcher()
-        self.assertIsNotNone(b._light_watcher)
-        self.assertTrue(b._light_watcher.is_alive())
+        self.assertIsNotNone(b._light_worker)
+        self.assertTrue(b._light_worker.is_alive())
         b.shutdownLighting()     # stop() + join() must return promptly
-        self.assertIsNone(b._light_watcher)
+        self.assertIsNone(b._light_worker)
+
+    def test_lighting_snapshot_shape_includes_sync(self):
+        b = self.new_backend()
+        self.fake.present = {"naga": {"name": "Razer Naga Pro", "brightness": 80,
+                                      "effects": ["static"], "zones": []}}
+        self.fake.sync = True
+        snap = b._lighting_snapshot()
+        self.assertIsNone(snap["error"])
+        self.assertEqual({d["id"] for d in snap["devices"]}, {"naga"})
+        self.assertTrue(snap["sync"])
+
+    def test_lighting_snapshot_reports_daemon_error(self):
+        b = self.new_backend()
+        self.fake.present = {"_error": "daemon not reachable"}
+        snap = b._lighting_snapshot()
+        self.assertEqual(snap["devices"], [])
+        self.assertIn("daemon", snap["error"])
+
+    def test_run_cmd_dispatches_each_op_to_hardware(self):
+        b = self.new_backend()
+        b._run_light_cmd(("effect", {"dev": "naga", "effect": "static", "r": 1, "g": 2,
+                                     "b": 3, "zone": "", "direction": "left", "react_ms": 1000}))
+        b._run_light_cmd(("brightness", {"dev": "naga", "pct": 40}))
+        b._run_light_cmd(("sync", {"enabled": True}))
+        self.assertEqual(self.fake.applied, [("naga", "static", (1, 2, 3), "", "left", 1000)])
+        self.assertEqual(self.fake.brightness_calls, [("naga", 40)])
+        self.assertEqual(self.fake.sync_calls, [True])
 
     def test_nondefault_direction_and_react_ms_survive_and_replay(self):
         b1 = self.new_backend()

@@ -54,6 +54,8 @@ Rectangle {
     property int litStep: 0
     // last lighting applied per device (drives the TRUTHFUL on-device preview);
     // OpenRazer can't read the active effect back, so this is KEYZER's own record.
+    // Hydrated from backend.lightState() on startup, so a chosen look persists across
+    // sessions (and the backend watcher re-applies it on device reconnect).
     property var lightState: ({})
     function effectLabel(tok) {
         return ({ "static": "Solid", "breath_single": "Pulse", "breath_dual": "Pulse",
@@ -69,7 +71,7 @@ Rectangle {
         return out
     }
     // lightState is keyed by "device|zone" — OpenRazer can't read effects back, so it's
-    // KEYZER's own record of the applied look, blank for a zone until it's set this session.
+    // KEYZER's own record of the applied look, blank for a zone until it's ever been set.
     function lightKey() { return curDev + "|" + lightZone }
     function curLight() {
         return lightState[lightKey()] || { effect: "", r: 68, g: 214, b: 44, direction: "left", react_ms: 1000 }
@@ -121,8 +123,18 @@ Rectangle {
     function zoneLabel(z) { var zs = lightZonesFor(); for (var i = 0; i < zs.length; i++) if (zs[i].name === z) return zs[i].label; return z }
     function curZoneEffects() { var zs = lightZonesFor(); for (var i = 0; i < zs.length; i++) if (zs[i].name === lightZone) return zs[i].effects || []; return [] }
     function lightLabel() { var d = lightDev(); return (d ? d.name : curDev) + (lightZone ? " · " + zoneLabel(lightZone) : "") }
-    function enterLighting() { lightInfo = backend.lightingDevices(); lightZone = ""; lcWheel = false; var d = lightDev(); lightBright = d ? d.brightness : 100; lightSync = backend.lightingSync() }
-    function syncLightDevice() { if (lighting) { lightZone = ""; var d = lightDev(); lightBright = d ? d.brightness : 100 } }
+    function enterLighting() { lightInfo = backend.lightingDevices(); lightZone = ""; lcWheel = false; var d = lightDev(); lightBright = d ? d.brightness : 100; lightSync = backend.lightingSync(); syncWheelToLook() }
+    function syncLightDevice() { if (lighting) { lightZone = ""; var d = lightDev(); lightBright = d ? d.brightness : 100; syncWheelToLook() } }
+    function selectLightZone(z) { lightZone = z; syncWheelToLook() }   // pick a zone + show its saved colour
+    // move the custom-colour wheel + value to a given colour (greys keep the wheel angle)
+    function setWheelRGB(r, g, b) {
+        var c = Qt.rgba((r || 0) / 255, (g || 0) / 255, (b || 0) / 255, 1)
+        if (c.hsvHue >= 0) lcH = c.hsvHue   // hue is -1 for greys; keep the wheel angle then
+        lcS = c.hsvSaturation; lcV = c.hsvValue
+    }
+    // move the wheel to the current look's colour, so the picker shows the saved
+    // colour (not a fixed default) after a restart / device / zone switch
+    function syncWheelToLook() { var s = curLight(); setWheelRGB(s.r, s.g, s.b) }
     function setLightBright(pct) { var r = backend.setLightBrightness(curDev, Math.round(pct)); if (!r.ok) showToast(r.error || "brightness failed") }
     function pickLightWheel(mx, my) { var dx = mx - 75, dy = my - 75; lcS = Math.max(0, Math.min(1, Math.sqrt(dx * dx + dy * dy) / 72)); lcH = (Math.atan2(dy, dx) / (2 * Math.PI) + 1) % 1 }
     function hex2(c) { var h = Math.round(c * 255).toString(16); return h.length < 2 ? "0" + h : h }
@@ -132,9 +144,7 @@ Rectangle {
         if (s.length === 3) s = s[0] + s[0] + s[1] + s[1] + s[2] + s[2]   // #abc -> #aabbcc
         if (!/^[0-9a-fA-F]{6}$/.test(s)) { showToast("Enter a hex colour like #44d62c"); return false }
         var r = parseInt(s.substr(0, 2), 16), g = parseInt(s.substr(2, 2), 16), b = parseInt(s.substr(4, 2), 16)
-        var c = Qt.rgba(r / 255, g / 255, b / 255, 1)
-        if (c.hsvHue >= 0) lcH = c.hsvHue   // hue is undefined (-1) for greys; keep the wheel angle then
-        lcS = c.hsvSaturation; lcV = c.hsvValue
+        setWheelRGB(r, g, b)
         applyLighting({ r: r, g: g, b: b })
         return true
     }
@@ -146,6 +156,7 @@ Rectangle {
                       { name: "scroll_wheel", label: "Scroll wheel", effects: ["static", "spectrum", "reactive", "none"] }] } ] }
         lightState = { "naga|": { effect: "breath_single", r: 40, g: 120, b: 255, direction: "left", react_ms: 1000 } }
         switchDevice("naga"); lighting = true; lcWheel = true; lightSync = false
+        syncWheelToLook()   // the disclosed wheel must show the seeded look's colour, not the default
     }
     property string dirtyText: "All changes saved"
     property var applyResult: null          // last Apply-to-hardware report
@@ -393,6 +404,7 @@ Rectangle {
         capSummary = backend.captureSummary()
         capSource = backend.capturesSource()
         curProfile = backend.activeProfile
+        root.lightState = backend.lightState()   // restore the saved look(s) across sessions
         // offscreen QA: drive initial state from env vars
         var q = backend.qaState()
         if (q.KEYZER_DEV) switchDevice(q.KEYZER_DEV)
@@ -419,6 +431,7 @@ Rectangle {
             if (q.KEYZER_LIGHTZONE) root.lightZone = q.KEYZER_LIGHTZONE
             var lseed = Object.assign({}, root.curLight(), { effect: q.KEYZER_LIGHTFX })
             var lmap = Object.assign({}, root.lightState); lmap[root.lightKey()] = lseed; root.lightState = lmap
+            root.syncWheelToLook()   // keep the wheel on the seeded colour, not the default
         }
         if (q.KEYZER_SHOT) root.shotMode = true   // screenshot render — drop the demo badge
         if (q.KEYZER_SHIFT === "1") root.bindLayer = "shift"   // QA: render the Hypershift layer
@@ -1092,7 +1105,7 @@ Rectangle {
                                     }
                                     Text {
                                         anchors.verticalCenter: parent.verticalCenter; font.pixelSize: 13; font.bold: true; color: root.txt
-                                        text: root.curLight().effect === "" ? "No look set this session — pick an effect"
+                                        text: root.curLight().effect === "" ? "No look set yet — pick an effect"
                                             : (root.effectLabel(root.curLight().effect)
                                                + (root.lightUsesDirection() ? " · " + (root.curLight().direction === "left" ? "← Left" : "Right →") : "")
                                                + (root.lightUsesSpeed() ? " · " + root.speedLabel(root.curLight().react_ms) : "")
@@ -1113,7 +1126,7 @@ Rectangle {
                                     border.width: 1; border.color: root.lightZone === modelData.name ? root.green : root.lineC
                                     Text { id: zlt; anchors.centerIn: parent; text: modelData.label; font.pixelSize: 11; font.bold: true
                                         color: root.lightZone === modelData.name ? root.greenTxt : root.muted }
-                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.lightZone = modelData.name }
+                                    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.selectLightZone(modelData.name) }
                                 }
                             }
                         }

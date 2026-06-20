@@ -30,6 +30,7 @@ from PySide6.QtGui import QGuiApplication
 
 import engine
 import backend
+import lighting
 
 # Exactly one QGuiApplication for the whole process (Qt requirement).
 _app = QGuiApplication.instance() or QGuiApplication([])
@@ -614,6 +615,230 @@ class DemoModeTests(_IsolatedBackendTest):
         self.assertIsNone(self.b._cal_worker)
         self.assertEqual(self.b.endCalibration(), {"ok": True})
         self.assertFalse(self.b.calibrating())
+
+
+class _FakeLighting:
+    """Stand-in for the lighting module: records set_effect calls and lets a test
+    drive which devices are 'present', with NO OpenRazer/DBus. (The real module's
+    DeviceManager() blocks ~25s when the daemon is down — never touch it in tests.)"""
+
+    def __init__(self):
+        self.applied = []        # (dev, effect, color, zone, direction, react_ms) in call order
+        self.present = {}         # what devices() returns; matches lighting.devices() shape
+        self.available_flag = True
+        self.fail = False         # make set_effect report failure
+        self.raise_for = set()    # dev ids whose set_effect raises (a transient OpenRazer error)
+
+    def available(self):
+        return self.available_flag
+
+    def devices(self):
+        return dict(self.present)
+
+    def set_effect(self, dev, effect, color=(68, 214, 44), color2=(34, 200, 255),
+                   *, direction="left", react_ms=1000, zone=""):
+        if dev in self.raise_for:
+            raise RuntimeError("simulated OpenRazer/DBus error")
+        if self.fail:
+            return {"ok": False, "error": "device not connected"}
+        self.applied.append((dev, effect, tuple(color), zone, direction, react_ms))
+        return {"ok": True}
+
+
+class _LightingBackendTest(_IsolatedBackendTest):
+    """Isolated backend + the lighting module swapped for a recording fake."""
+
+    def setUp(self):
+        super().setUp()
+        self.fake = _FakeLighting()
+        self._saved_light = {n: getattr(lighting, n)
+                             for n in ("available", "devices", "set_effect")}
+        lighting.available = self.fake.available
+        lighting.devices = self.fake.devices
+        lighting.set_effect = self.fake.set_effect
+
+    def tearDown(self):
+        for n, v in self._saved_light.items():
+            setattr(lighting, n, v)
+        super().tearDown()
+
+
+class LightingPersistenceTests(_LightingBackendTest):
+    """The applied 'look' (effect + colour + params) must survive an app restart —
+    KEYZER keeps its own record because OpenRazer can't read the effect back."""
+
+    def test_set_effect_records_and_persists_across_restart(self):
+        b1 = self.new_backend()
+        r = b1.setLightEffect("naga", "static", 10, 20, 30, "")
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.fake.applied[-1],
+                         ("naga", "static", (10, 20, 30), "", "left", 1000))
+        self.assertEqual(b1.lightState(), {"naga|": {
+            "effect": "static", "r": 10, "g": 20, "b": 30,
+            "direction": "left", "react_ms": 1000}})
+        # A fresh instance (a restart) reads the same persisted look from disk.
+        b2 = self.new_backend()
+        self.assertEqual(b2.lightState()["naga|"]["effect"], "static")
+        self.assertEqual(b2.lightState()["naga|"]["r"], 10)
+        # ...and it's actually on disk under settings.lightState.
+        on_disk = json.loads(engine.PROFILES.read_text())
+        self.assertEqual(on_disk["settings"]["lightState"]["naga|"]["b"], 30)
+
+    def test_failed_apply_is_not_remembered(self):
+        self.fake.fail = True
+        b = self.new_backend()
+        r = b.setLightEffect("naga", "static", 1, 2, 3, "")
+        self.assertFalse(r["ok"])
+        self.assertEqual(b.lightState(), {})   # a look that didn't take isn't recorded
+
+    def test_demo_does_not_persist_a_look(self):
+        b = self.new_backend()
+        b._demo = True
+        r = b.setLightEffect("naga", "static", 1, 2, 3, "")
+        self.assertTrue(r["ok"])               # demo short-circuits to ok
+        self.assertEqual(b.lightState(), {})   # ...but records/persists nothing
+
+
+class LightingReapplyTests(_LightingBackendTest):
+    """The reconnect/startup watcher re-applies KEYZER's saved look whenever a
+    device (re)appears — devices forget software-set effects on unplug/power loss."""
+
+    def test_reapply_only_on_absent_to_present_transition(self):
+        b = self.new_backend()
+        b.setLightEffect("naga", "static", 1, 2, 3, "")   # seed a saved look
+        self.fake.applied.clear()
+
+        self.fake.present = {}                              # device absent
+        b._lighting_poll()
+        self.assertEqual(self.fake.applied, [])            # nothing to re-apply
+
+        self.fake.present = {"naga": {"name": "Razer Naga Pro"}}   # it returns
+        b._lighting_poll()
+        self.assertEqual(self.fake.applied,
+                         [("naga", "static", (1, 2, 3), "", "left", 1000)])
+
+        self.fake.applied.clear()
+        b._lighting_poll()                                 # still present: no re-apply
+        self.assertEqual(self.fake.applied, [])            # (no flicker on steady state)
+
+        self.fake.present = {}; b._lighting_poll()          # unplug
+        self.fake.present = {"naga": {"name": "Razer Naga Pro"}}; b._lighting_poll()
+        self.assertEqual(self.fake.applied,
+                         [("naga", "static", (1, 2, 3), "", "left", 1000)])  # replug re-applies
+
+    def test_first_poll_after_restart_reapplies_present_devices(self):
+        b1 = self.new_backend()
+        b1.setLightEffect("naga", "static", 7, 8, 9, "")
+        b2 = self.new_backend()                            # a restart: _seen starts empty
+        self.fake.applied.clear()
+        self.fake.present = {"naga": {"name": "Razer Naga Pro"}}
+        b2._lighting_poll()                                # first tick = startup re-apply
+        self.assertEqual(self.fake.applied,
+                         [("naga", "static", (7, 8, 9), "", "left", 1000)])
+
+    def test_present_devices_ignores_errors(self):
+        b = self.new_backend()
+        self.fake.present = {"_error": "daemon not reachable"}
+        self.assertEqual(b._present_devices(), set())
+        self.fake.present = {"naga": {"_error": "x"}, "tartarus": {"name": "T"}}
+        self.assertEqual(b._present_devices(), {"tartarus"})
+
+    def test_reapply_applies_whole_device_before_zones(self):
+        b = self.new_backend()
+        b.setLightEffect("naga", "spectrum", 0, 0, 0, "")     # whole device
+        b.setLightEffect("naga", "static", 1, 2, 3, "logo")   # one zone
+        self.fake.applied.clear()
+        self.fake.present = {"naga": {"name": "Razer Naga Pro"}}
+        b._lighting_poll()
+        zones = [a[3] for a in self.fake.applied if a[0] == "naga"]
+        self.assertEqual(zones, ["", "logo"])   # whole-device first so zone looks win
+
+    def test_demo_poll_is_a_noop(self):
+        b = self.new_backend()
+        b.setLightEffect("naga", "static", 1, 2, 3, "")
+        b._demo = True
+        self.fake.applied.clear()
+        self.fake.present = {"naga": {"name": "Razer Naga Pro"}}
+        b._lighting_poll()
+        self.assertEqual(self.fake.applied, [])
+
+    def test_watcher_not_started_in_demo_or_when_unavailable(self):
+        b = self.new_backend()
+        b._demo = True
+        b.startLightingWatcher()
+        self.assertIsNone(b._light_watcher)
+        b._demo = False
+        self.fake.available_flag = False
+        b.startLightingWatcher()
+        self.assertIsNone(b._light_watcher)
+        b.shutdownLighting()   # safe to call with no watcher running
+
+    def test_watcher_starts_and_stops_cleanly(self):
+        b = self.new_backend()
+        self.fake.present = {}   # no devices -> each poll returns instantly, no DBus, no delay
+        b.startLightingWatcher()
+        self.assertIsNotNone(b._light_watcher)
+        self.assertTrue(b._light_watcher.is_alive())
+        b.shutdownLighting()     # stop() + join() must return promptly
+        self.assertIsNone(b._light_watcher)
+
+    def test_nondefault_direction_and_react_ms_survive_and_replay(self):
+        b1 = self.new_backend()
+        b1.setLightEffect("naga", "wave", 1, 2, 3, "", "right", 1000)
+        b1.setLightEffect("naga", "reactive", 4, 5, 6, "logo", "left", 500)
+        self.assertEqual(b1.lightState()["naga|"]["direction"], "right")
+        self.assertEqual(b1.lightState()["naga|logo"]["react_ms"], 500)
+        b2 = self.new_backend()                      # restart, then reconnect
+        self.fake.applied.clear()
+        self.fake.present = {"naga": {"name": "Razer Naga Pro"}}
+        b2._lighting_poll()
+        self.assertIn(("naga", "wave", (1, 2, 3), "", "right", 1000), self.fake.applied)
+        self.assertIn(("naga", "reactive", (4, 5, 6), "logo", "left", 500), self.fake.applied)
+
+    def test_off_look_persists_and_replays(self):
+        b = self.new_backend()
+        b.setLightEffect("naga", "none", 0, 0, 0, "")   # lights off is a real, kept choice
+        self.assertEqual(b.lightState()["naga|"]["effect"], "none")
+        self.fake.applied.clear()
+        self.fake.present = {"naga": {"name": "Razer Naga Pro"}}
+        b._lighting_poll()
+        self.assertEqual(self.fake.applied, [("naga", "none", (0, 0, 0), "", "left", 1000)])
+
+    def test_reapply_uses_razer_green_for_a_legacy_record_missing_rgb(self):
+        b = self.new_backend()
+        b._reapply_device("naga", {"naga|": {"effect": "static", "direction": "left", "react_ms": 1000}})
+        self.assertEqual(self.fake.applied, [("naga", "static", (68, 214, 44), "", "left", 1000)])
+
+    def test_corrupt_lightstate_does_not_crash_startup(self):
+        engine.save_json(engine.PROFILES, {
+            "version": 2, "active": "Gaming", "live": {},
+            "settings": {"lighting": True, "lightState": ["not", "a", "dict"]},
+            "profiles": {"Gaming": {"tartarus": {}, "naga": {}}}})
+        b = self.new_backend()                 # must boot, not raise
+        self.assertEqual(b.lightState(), {})    # the bad value is dropped, not honoured
+
+    def test_one_corrupt_look_value_does_not_starve_the_others(self):
+        engine.save_json(engine.PROFILES, {
+            "version": 2, "active": "Gaming", "live": {},
+            "settings": {"lightState": {
+                "naga|": "CORRUPT",      # a non-dict value must be skipped, not crash
+                "naga|logo": {"effect": "static", "r": 1, "g": 2, "b": 3,
+                              "direction": "left", "react_ms": 1000}}},
+            "profiles": {"Gaming": {"tartarus": {}, "naga": {}}}})
+        b = self.new_backend()
+        self.fake.present = {"naga": {"name": "Razer Naga Pro"}}
+        b._lighting_poll()
+        self.assertEqual(self.fake.applied, [("naga", "static", (1, 2, 3), "logo", "left", 1000)])
+
+    def test_one_device_error_does_not_starve_the_others(self):
+        b = self.new_backend()
+        b.setLightEffect("tartarus", "static", 9, 9, 9, "")
+        b.setLightEffect("naga", "static", 1, 2, 3, "")
+        self.fake.applied.clear()
+        self.fake.raise_for = {"tartarus"}      # tartarus throws this tick
+        self.fake.present = {"tartarus": {"name": "T"}, "naga": {"name": "N"}}
+        b._lighting_poll()                       # must not propagate
+        self.assertEqual(self.fake.applied, [("naga", "static", (1, 2, 3), "", "left", 1000)])
 
 
 class HypershiftTests(_IsolatedBackendTest):

@@ -53,6 +53,11 @@ def main() -> int:
     # On quit, cleanly stop any in-progress calibration so its worker thread ungrabs
     # the device and isn't torn down mid-run (avoids a 'QThread destroyed' abort).
     app.aboutToQuit.connect(backend.shutdownCalibration)
+    # Same for the lighting reconnect watcher, and start it: it re-applies the saved
+    # look on startup and whenever a device returns (off the GUI thread — building an
+    # OpenRazer DeviceManager can block ~25s when the daemon is down).
+    app.aboutToQuit.connect(backend.shutdownLighting)
+    backend.startLightingWatcher()
     view.rootContext().setContextProperty("backend", backend)
     view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
     view.setColor("#0b0b0e")

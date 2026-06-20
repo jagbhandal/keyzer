@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import Property, QObject, QThread, QTimer, Signal, Slot
@@ -34,6 +35,35 @@ _DEMO_LIGHTING = {"error": None, "devices": [
                {"name": "scroll_wheel", "label": "Scroll wheel",
                 "effects": ["static", "spectrum", "reactive", "none"]}],
      "error": None}]}
+
+
+class _LightingWatcher(threading.Thread):
+    """Polls for Razer device (re)connections off the GUI thread and re-applies
+    KEYZER's saved look when one returns — devices forget software-set Chroma
+    effects on unplug/power loss, and OpenRazer can't read the effect back.
+
+    A daemon thread (NOT a QThread): it touches no Qt objects, and creating an
+    OpenRazer DeviceManager can block ~25s when the daemon is unreachable, so the
+    thread must be abandonable at exit. A daemon thread is killed with the process
+    even when mid-DBus-call, with none of the 'QThread: Destroyed while thread is
+    still running' teardown abort a blocked QThread would cause."""
+
+    def __init__(self, poll, interval_ms: int = 4000):
+        super().__init__(daemon=True)
+        self._poll = poll                       # one tick (Backend._lighting_poll)
+        self._interval = interval_ms / 1000.0
+        self._stop = threading.Event()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self._poll()
+            except Exception:
+                pass   # a watcher hiccup must never crash the app
+            self._stop.wait(self._interval)   # interruptible inter-poll wait
 
 
 class _CaptureWorker(QThread):
@@ -214,6 +244,12 @@ class Backend(QObject):
         self._shift = {}          # Hypershift layer 2: {profile: {device: {hotspot: value}}}
         self._shiftKeys = {}      # the hold-to-shift key: {profile: {device: hotspot}}
         self._load_profiles()
+        # ----- lighting persistence + reconnect watcher -----
+        self._light_lock = threading.Lock()
+        # mirror of the persisted looks the watcher reads off-thread (see _remember_look)
+        self._light_looks = dict(self._settings.get("lightState") or {})
+        self._light_seen = set()   # devices present on the last poll (watcher-thread only)
+        self._light_watcher = None  # background reconnect/startup watcher; started from main.py
 
     def _load_profiles(self) -> None:
         """Restore saved profiles, or seed the defaults on first run."""
@@ -227,6 +263,11 @@ class Backend(QObject):
                                              # real persistence is engine autoload, below
             if isinstance(saved.get("settings"), dict):
                 self._settings = saved["settings"]
+                # A hand-edited / legacy / partly-corrupt file could carry a non-dict
+                # lightState; drop it so it can't crash the eager read in __init__
+                # (matches how the rest of this loader stays defensive).
+                if not isinstance(self._settings.get("lightState"), dict):
+                    self._settings.pop("lightState", None)
             if isinstance(saved.get("shift"), dict):
                 self._shift = saved["shift"]              # v2: Hypershift layer 2
             if isinstance(saved.get("shiftKeys"), dict):
@@ -709,8 +750,106 @@ class Backend(QObject):
                        direction: str = "left", react_ms: int = 1000) -> dict:
         if self._demo:
             return {"ok": True}
-        return lighting.set_effect(dev, effect, (r, g, b), zone=zone,
-                                   direction=direction, react_ms=react_ms)
+        res = lighting.set_effect(dev, effect, (r, g, b), zone=zone,
+                                  direction=direction, react_ms=react_ms)
+        if isinstance(res, dict) and res.get("ok"):
+            # OpenRazer can't read the effect back, so record what we applied —
+            # this is what survives a restart and gets replayed on reconnect.
+            self._remember_look(dev, zone, effect, r, g, b, direction, react_ms)
+        return res
+
+    @Slot(result="QVariant")
+    def lightState(self) -> dict:
+        """KEYZER's persisted record of the applied look per ``device|zone``. QML
+        hydrates from this on startup so a chosen look survives across sessions."""
+        return dict(self._settings.get("lightState") or {})
+
+    def _remember_look(self, dev: str, zone: str, effect: str, r: int, g: int, b: int,
+                       direction: str, react_ms: int) -> None:
+        look = {"effect": effect, "r": int(r), "g": int(g), "b": int(b),
+                "direction": direction, "react_ms": int(react_ms)}
+        looks = dict(self._settings.get("lightState") or {})
+        looks[f"{dev}|{zone}"] = look
+        self._settings["lightState"] = looks
+        with self._light_lock:
+            self._light_looks = looks   # publish for the watcher thread
+        self._save()
+
+    # ----- reconnect / startup re-apply (background watcher) -----
+    def _light_looks_snapshot(self) -> dict:
+        with self._light_lock:
+            return dict(self._light_looks)
+
+    def _present_devices(self) -> set:
+        """Set of target ids OpenRazer currently reports as connected (empty when the
+        daemon is unreachable). Builds a fresh DeviceManager — may block ~25s when the
+        daemon is down, so only the watcher thread (never the GUI) calls this."""
+        d = lighting.devices()
+        if not isinstance(d, dict) or "_error" in d:
+            return set()
+        return {k for k, v in d.items()
+                if not (isinstance(v, dict) and "_error" in v)}
+
+    @staticmethod
+    def _zone_of(key: str) -> str:
+        return key.split("|", 1)[1] if "|" in key else ""
+
+    def _reapply_device(self, dev: str, looks: dict) -> None:
+        # whole-device look first, then zones, so a zone look wins where both exist
+        keys = sorted((k for k in looks if k.split("|", 1)[0] == dev),
+                      key=lambda k: self._zone_of(k) != "")
+        for key in keys:
+            s = looks.get(key)
+            # tolerate a malformed on-disk look value (non-dict / missing fields)
+            if not isinstance(s, dict) or not s.get("effect"):
+                continue
+            rm = s.get("react_ms", 1000)
+            lighting.set_effect(dev, s["effect"],
+                                (s.get("r", 68), s.get("g", 214), s.get("b", 44)),
+                                zone=self._zone_of(key), direction=s.get("direction", "left"),
+                                react_ms=int(rm) if isinstance(rm, (int, float)) else 1000)
+
+    def _lighting_poll(self, settle_ms: int = 0) -> None:
+        """One watcher tick: re-apply each saved look to every device that has
+        (re)appeared since the last tick. The first tick after construction sees an
+        empty 'seen' set, so it re-applies everything present — the startup re-apply
+        that restores the look after an app or daemon restart."""
+        if self._demo:
+            return
+        present = self._present_devices()
+        returned = present - self._light_seen
+        self._light_seen = present
+        if not returned:
+            return   # nothing newly connected -> no re-apply (no steady-state flicker)
+        if settle_ms:   # a freshly re-enumerated device can reject effects for a moment
+            time.sleep(settle_ms / 1000.0)
+        looks = self._light_looks_snapshot()
+        for dev in sorted(returned):
+            try:
+                self._reapply_device(dev, looks)
+            except Exception:
+                pass   # one device's failure must never starve the others' re-apply
+
+    @Slot()
+    def startLightingWatcher(self) -> None:
+        """Begin watching for device (re)connections (and run the startup re-apply).
+        Called from main.py once the UI is up — never in demo or without OpenRazer."""
+        if self._demo or self._light_watcher is not None or not lighting.available():
+            return
+        self._light_watcher = _LightingWatcher(
+            lambda: self._lighting_poll(settle_ms=400), interval_ms=4000)
+        self._light_watcher.start()
+
+    @Slot()
+    def shutdownLighting(self) -> None:
+        """App is quitting — stop the watcher. Wired to QGuiApplication.aboutToQuit in
+        main.py (mirrors shutdownCalibration). Best-effort join: a mid-poll blocked
+        ~25s on a down daemon won't hold up exit — it's a daemon thread."""
+        w = self._light_watcher
+        if w is not None:
+            w.stop()
+            w.join(timeout=1.0)
+            self._light_watcher = None
 
     @Slot(str, int, result="QVariant")
     def setLightBrightness(self, dev: str, pct: int) -> dict:

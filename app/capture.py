@@ -142,15 +142,18 @@ def read_press(fd_to_dev):
     while True:
         ready, _, _ = select.select(fds, [], [])
         if sys.stdin.fileno() in ready:
-            return "cmd", sys.stdin.readline().strip().lower()
+            line = sys.stdin.readline()
+            if line == "":   # EOF (closed/redirected stdin) — finish, don't busy-loop
+                return "cmd", "q"
+            return "cmd", line.strip().lower()
         for fd in ready:
             dev = fd_to_dev.get(fd)
             if dev is None:
                 continue
             try:
                 events = list(dev.read())
-            except BlockingIOError:
-                continue
+            except (BlockingIOError, OSError):   # a node unplugged mid-capture must
+                continue                         # not kill the whole session
             for ev in events:
                 payload = classify_event(ev, dev)
                 if payload is not None:

@@ -617,6 +617,54 @@ class DemoModeTests(_IsolatedBackendTest):
         self.assertFalse(self.b.calibrating())
 
 
+class ImageUrlGuardTests(_IsolatedBackendTest):
+    """imageUrl confines the image loader to the repo so a community-contributed
+    layouts.json can't point it at arbitrary files. Pins the traversal guard so a
+    refactor dropping .resolve()/is_relative_to fails CI."""
+
+    def test_in_repo_path_yields_file_uri(self):
+        b = self.new_backend()
+        url = b.imageUrl("layouts.json")
+        self.assertTrue(url.startswith("file://"))
+        self.assertIn(str(backend.REPO), url)
+
+    def test_traversal_and_absolute_paths_are_rejected(self):
+        b = self.new_backend()
+        self.assertEqual(b.imageUrl("../../etc/passwd"), "")
+        self.assertEqual(b.imageUrl("/etc/passwd"), "")
+        self.assertEqual(b.imageUrl("app/../../etc/shadow"), "")
+
+
+class CaptureWorkerClaimTests(unittest.TestCase):
+    """The _CaptureWorker 're-arm mid-read wins' invariant: a press is recorded only
+    for the hotspot armed when it arrived. Tested directly (no thread, no devices)."""
+
+    def _worker(self):
+        return backend._CaptureWorker("tartarus", [], "Dev", "1532:0244", [])
+
+    def test_claim_succeeds_only_once_per_arm(self):
+        w = self._worker()
+        w.arm("TAR_01")
+        self.assertTrue(w._claim("TAR_01"))    # the armed key wins
+        self.assertFalse(w._claim("TAR_01"))   # already consumed -> no double record
+
+    def test_rearm_supersedes_the_previous_target(self):
+        w = self._worker()
+        w.arm("TAR_01")
+        w.arm("TAR_02")                        # re-armed before the press landed
+        self.assertFalse(w._claim("TAR_01"))   # stale target loses
+        self.assertTrue(w._claim("TAR_02"))    # current target wins
+
+    def test_disarm_blocks_any_claim(self):
+        w = self._worker()
+        w.arm("TAR_01")
+        w.disarm()
+        self.assertFalse(w._claim("TAR_01"))
+
+    def test_idle_worker_claims_nothing(self):
+        self.assertFalse(self._worker()._claim("TAR_01"))
+
+
 class _FakeLighting:
     """Stand-in for the lighting module: records set_effect calls and lets a test
     drive which devices are 'present', with NO OpenRazer/DBus. (The real module's

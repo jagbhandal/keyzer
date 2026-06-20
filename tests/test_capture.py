@@ -70,5 +70,129 @@ class ClassifyEventTests(unittest.TestCase):
         self.assertIsNone(capture.classify_event(_ev(ecodes.EV_MSC, ecodes.MSC_SCAN, 1), self.dev))
 
 
+class _FakeNode:
+    """A fake evdev node for the select-driven read loops."""
+    path = "/dev/input/event99"
+
+    def __init__(self, fd, events=(), name="Razer Test Device"):
+        self.fd = fd
+        self._events = list(events)
+        self.name = name
+
+    def capabilities(self, absinfo=False):
+        return {1: [30, 31, 32]}
+
+    def read(self):
+        return iter(self._events)
+
+
+@unittest.skipIf(capture is None, "python-evdev not available")
+class DeviceResolutionTests(unittest.TestCase):
+    """open_nodes / preset_dir_name — pure logic, a real source of 'device not found'."""
+
+    def test_malformed_or_empty_usb_returns_none(self):
+        for usb in ("bad", "", "1532", "zz:zz"):
+            self.assertEqual(capture.open_nodes({"usb": usb}), (None, []))
+        self.assertEqual(capture.open_nodes({}), (None, []))   # missing key
+
+    def test_valid_usb_but_no_device_plugged(self):
+        saved = capture.find_nodes
+        capture.find_nodes = lambda v, p: []
+        try:
+            self.assertEqual(capture.open_nodes({"usb": "1532:008f"}), (None, []))
+        finally:
+            capture.find_nodes = saved
+
+    def test_valid_usb_returns_shortest_name_and_nodes(self):
+        nodes = [_FakeNode(5, name="Razer Naga Pro Extra Keyboard"),
+                 _FakeNode(6, name="Razer Naga Pro")]
+        saved = capture.find_nodes
+        capture.find_nodes = lambda v, p: nodes
+        try:
+            name, got = capture.open_nodes({"usb": "1532:008f"})
+            self.assertEqual(name, "Razer Naga Pro")   # input-remapper picks shortest
+            self.assertEqual(got, nodes)
+        finally:
+            capture.find_nodes = saved
+
+    def test_preset_dir_name_picks_shortest(self):
+        nodes = [_FakeNode(1, name="AAA Mouse"), _FakeNode(2, name="AA"),
+                 _FakeNode(3, name="AAAA Control")]
+        self.assertEqual(capture.preset_dir_name(nodes), "AA")
+
+
+@unittest.skipIf(capture is None, "python-evdev not available")
+class NextPressTests(unittest.TestCase):
+    def test_timeout_returns_none(self):
+        saved = capture.select.select
+        capture.select.select = lambda r, w, x, t=None: ([], [], [])
+        try:
+            self.assertIsNone(capture.next_press([_FakeNode(7)], timeout=0.01))
+        finally:
+            capture.select.select = saved
+
+    def test_returns_first_real_press(self):
+        node = _FakeNode(7, events=[_ev(ecodes.EV_KEY, ecodes.KEY_A, 1)])
+        saved = capture.select.select
+        capture.select.select = lambda r, w, x, t=None: ([node.fd], [], [])
+        try:
+            p = capture.next_press([node])
+            self.assertIsNotNone(p)
+            self.assertEqual(p["code"], ecodes.KEY_A)
+        finally:
+            capture.select.select = saved
+
+
+@unittest.skipIf(capture is None, "python-evdev not available")
+class ReadPressTests(unittest.TestCase):
+    """The interactive CLI loop's robustness fixes (EOF guard + OSError tolerance)."""
+
+    def test_eof_on_stdin_finishes_instead_of_busy_looping(self):
+        import sys
+        self._fd_to_dev = {}
+        stdin_fd = sys.stdin.fileno()
+        saved_sel, saved_rl = capture.select.select, sys.stdin.readline
+        capture.select.select = lambda r, w, x, t=None: ([stdin_fd], [], [])
+        sys.stdin.readline = lambda: ""   # EOF
+        try:
+            self.assertEqual(capture.read_press({}), ("cmd", "q"))
+        finally:
+            capture.select.select = saved_sel
+            sys.stdin.readline = saved_rl
+
+    def test_typed_command_is_lowercased(self):
+        import sys
+        stdin_fd = sys.stdin.fileno()
+        saved_sel, saved_rl = capture.select.select, sys.stdin.readline
+        capture.select.select = lambda r, w, x, t=None: ([stdin_fd], [], [])
+        sys.stdin.readline = lambda: "S\n"
+        try:
+            self.assertEqual(capture.read_press({}), ("cmd", "s"))
+        finally:
+            capture.select.select = saved_sel
+            sys.stdin.readline = saved_rl
+
+    def test_oserror_on_node_does_not_crash_the_loop(self):
+        import sys
+        stdin_fd = sys.stdin.fileno()
+
+        class _Boom:
+            fd = 9
+            name = "Razer"
+            def read(self): raise OSError("ENODEV")
+
+        boom = _Boom()
+        # first wake on the dead node (raises OSError -> continue), then a typed 'q'
+        seq = iter([([boom.fd], [], []), ([stdin_fd], [], [])])
+        saved_sel, saved_rl = capture.select.select, sys.stdin.readline
+        capture.select.select = lambda r, w, x, t=None: next(seq)
+        sys.stdin.readline = lambda: "q\n"
+        try:
+            self.assertEqual(capture.read_press({boom.fd: boom}), ("cmd", "q"))
+        finally:
+            capture.select.select = saved_sel
+            sys.stdin.readline = saved_rl
+
+
 if __name__ == "__main__":
     unittest.main()

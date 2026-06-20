@@ -90,8 +90,11 @@ Rectangle {
         var m = Object.assign({}, lightState); m[lightKey()] = s; lightState = m
         showToast(lightLabel() + " → " + effectLabel(s.effect))
     }
-    // colour the on-device glow with the current zone's applied look (approximate preview)
-    function glowColor() {
+    // colour the on-device glow with the current zone's applied look (approximate
+    // preview). ONE shared binding rather than a per-hotspot function call, so for a
+    // breath/spectrum effect it re-evaluates once per frame instead of once per
+    // visible hotspot (up to 22) — the value is identical across all of them.
+    readonly property color liveGlow: {
         var s = lightState[lightKey()]
         if (!s || !s.effect || s.effect === "none") return Qt.rgba(0, 0, 0, 0)
         if (s.effect === "spectrum") return Qt.hsla(((litStep * 8) % 360) / 360, 0.9, 0.55, 0.9)
@@ -694,7 +697,7 @@ Rectangle {
             anchors.fill: parent; radius: 9
             color: "transparent"
             border.width: 2
-            border.color: root.glowColor()   // the real applied colour/effect, not a fake rainbow
+            border.color: root.liveGlow   // the real applied colour/effect, not a fake rainbow
         }
         HoverHandler { id: hov; cursorShape: root.aligning ? Qt.SizeAllCursor : Qt.PointingHandCursor }
         TapHandler {

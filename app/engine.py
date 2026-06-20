@@ -229,9 +229,14 @@ def build_preset(binds: dict, captures: dict, combos: dict | None = None,
             cap = captures.get(m)
             if not cap:
                 return None, f"{hotspot}: {m} not captured yet — run capture.py"
-            if _is_pointer(cap):
-                return None, f"{hotspot}: {m} captured pointer movement — re-capture it"
-            inputs.append(_input_config(cap))
+            try:
+                if _is_pointer(cap):
+                    return None, f"{hotspot}: {m} captured pointer movement — re-capture it"
+                inputs.append(_input_config(cap))
+            except (KeyError, TypeError, ValueError):
+                # a hand-edited / partially-written captures.json row -> skip with a
+                # warning instead of crashing the whole apply
+                return None, f"{hotspot}: {m} capture is corrupt — re-capture it"
         return inputs, None
 
     for hotspot, value in binds.items():
@@ -252,12 +257,18 @@ def build_preset(binds: dict, captures: dict, combos: dict | None = None,
     # base single-key mapping. Same primitive as the 8-way thumb diagonals.
     if shift_binds and shift_key:
         hold_cap = captures.get(shift_key)
+        hold_input = None
         if not hold_cap:
             warnings.append(f"shift: hold key {shift_key} not captured — run capture.py")
-        elif _is_pointer(hold_cap):
-            warnings.append(f"shift: hold key {shift_key} captured pointer movement — re-capture it")
         else:
-            hold_input = _input_config(hold_cap)
+            try:
+                if _is_pointer(hold_cap):
+                    warnings.append(f"shift: hold key {shift_key} captured pointer movement — re-capture it")
+                else:
+                    hold_input = _input_config(hold_cap)
+            except (KeyError, TypeError, ValueError):
+                warnings.append(f"shift: hold key {shift_key} capture is corrupt — re-capture it")
+        if hold_input is not None:
             for hotspot, value in shift_binds.items():
                 if hotspot == shift_key:
                     continue   # the hold key itself can't be a shift target
@@ -293,9 +304,23 @@ def _control(*args: str) -> subprocess.CompletedProcess:
         return subprocess.CompletedProcess(args, 1, "", "input-remapper timed out")
 
 
+_daemon_seen_ready = False   # has the input-remapper daemon answered hello this session?
+
+
 def service_ready() -> bool:
-    """Is the input-remapper daemon reachable (started, on the system bus)?"""
-    return available() and _control("--command", "hello").returncode == 0
+    """Is the input-remapper daemon reachable (started, on the system bus)?
+
+    On the first unreachable->reachable transition this drops the daemon-derived
+    caches (_vocab, _ir_version) so a daemon that starts AFTER the app does is
+    re-queried — otherwise we'd keep validating against the bundled-only keysym set
+    and never stamp config.json's version for the rest of the session."""
+    global _daemon_seen_ready
+    ready = available() and _control("--command", "hello").returncode == 0
+    if ready and not _daemon_seen_ready:
+        _daemon_seen_ready = True
+        _vocab.cache_clear()
+        _ir_version.cache_clear()
+    return ready
 
 
 def device_keys() -> list[str]:

@@ -179,6 +179,40 @@ class BuildPresetTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("TAR_01", warnings[0])
 
+    def test_corrupt_capture_warns_and_skips_without_raising(self):
+        # A hand-edited / partially-written captures.json with a non-numeric or
+        # missing type/code must degrade to a per-binding warning, NOT raise out
+        # of build_preset (which would crash the apply @Slot).
+        for bad in ({"type": "x", "code": 1}, {"type": 1, "code": "y"},
+                    {"type": 1, "code": None}, {"type": 1}):
+            caps = {"TAR_01": bad}
+            mappings, warnings = engine.build_preset({"TAR_01": "Esc"}, caps)
+            self.assertEqual(mappings, [], f"bad cap {bad} should map nothing")
+            self.assertEqual(len(warnings), 1)
+            self.assertIn("TAR_01", warnings[0])
+            self.assertIn("corrupt", warnings[0].lower())
+
+    def test_corrupt_capture_does_not_starve_valid_binds(self):
+        caps = dict(self.captures)
+        caps["TAR_01"] = {"type": 1, "code": "nope"}   # one corrupt row
+        mappings, warnings = engine.build_preset(
+            {"TAR_01": "Esc", "TAR_08": "A"}, caps)
+        self.assertEqual(len(mappings), 1)             # the good bind still applies
+        self.assertEqual(mappings[0]["output_symbol"], "a")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("corrupt", warnings[0].lower())
+
+    def test_corrupt_shift_hold_key_warns_and_skips_shift_layer(self):
+        caps = dict(self.captures)
+        caps["TAR_08"] = {"type": 1, "code": "bad"}    # the hold key is corrupt
+        mappings, warnings = engine.build_preset(
+            {"TAR_01": "Esc"}, caps,
+            shift_binds={"TAR_01": "F5"}, shift_key="TAR_08")
+        # base layer still applied; shift layer skipped with a warning, no raise
+        self.assertEqual(len(mappings), 1)
+        self.assertEqual(mappings[0]["output_symbol"], "Escape")
+        self.assertTrue(any("shift" in w.lower() and "corrupt" in w.lower() for w in warnings))
+
     def test_combo_joins_member_captures(self):
         combos = {"TAR_TPAD_NE": ["TAR_TPAD_N", "TAR_TPAD_E"]}
         mappings, warnings = engine.build_preset(
@@ -600,6 +634,43 @@ class ApplyRevertTests(unittest.TestCase):
         self.assertEqual(report["naga"]["error"], "no applicable binds")
         self.assertIn(("stop", "Razer Naga Pro"), calls)     # injection stopped
         self.assertIn(("clear", "Razer Naga Pro"), calls)    # autoload dropped
+
+
+class DaemonCacheRefreshTests(unittest.TestCase):
+    """A daemon that starts AFTER the app must invalidate the daemon-derived caches
+    (_vocab keysym set, _ir_version) on the first reachable transition."""
+
+    def setUp(self):
+        import shutil
+        self._saved = {"available": engine.available, "_control": engine._control,
+                       "which": shutil.which, "seen": engine._daemon_seen_ready}
+
+    def tearDown(self):
+        import shutil
+        engine.available = self._saved["available"]
+        engine._control = self._saved["_control"]
+        shutil.which = self._saved["which"]
+        engine._daemon_seen_ready = self._saved["seen"]
+        engine._vocab.cache_clear()
+        engine._ir_version.cache_clear()
+
+    def test_caches_cleared_once_on_daemon_becoming_ready(self):
+        import shutil
+        import subprocess
+        shutil.which = lambda name: None       # keep _vocab cheap (skip the subprocess)
+        engine.available = lambda: True
+        engine._control = lambda *a: subprocess.CompletedProcess(a, 0, "", "")
+        engine._daemon_seen_ready = False
+        engine._vocab.cache_clear()
+
+        engine._vocab()                                       # populate the cache
+        self.assertEqual(engine._vocab.cache_info().currsize, 1)
+        self.assertTrue(engine.service_ready())               # transition -> clears
+        self.assertEqual(engine._vocab.cache_info().currsize, 0)
+
+        engine._vocab()                                       # repopulate
+        self.assertTrue(engine.service_ready())               # already seen -> no re-clear
+        self.assertEqual(engine._vocab.cache_info().currsize, 1)
 
 
 if __name__ == "__main__":

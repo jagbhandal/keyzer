@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -333,7 +334,7 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
 
     def test_apply_returns_well_shaped_dict(self):
         # Whether the real daemon is up or not, the result is a graceful dict.
-        r = self.b.applyToHardware("Gaming", "")
+        r = self.b._apply_sync("Gaming", "")
         self.assertIsInstance(r, dict)
         self.assertEqual(set(r) >= {"ok", "message", "devices"}, True)
         self.assertIsInstance(r["ok"], bool)
@@ -358,7 +359,7 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
         engine.stop = lambda key: True
         engine.clear_autoload = lambda key=None: None
         try:
-            r = self.b.applyToHardware("Default", "")
+            r = self.b._apply_sync("Default", "")
         finally:
             (engine.service_ready, engine.sync_keyboard_layout,
              engine.device_keys, engine.stop, engine.clear_autoload) = saved
@@ -370,7 +371,7 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
             self.assertEqual(d["error"], "no applicable binds")
 
     def test_apply_nonexistent_profile(self):
-        r = self.b.applyToHardware("Ghost", "")
+        r = self.b._apply_sync("Ghost", "")
         self.assertFalse(r["ok"])
         self.assertEqual(r["devices"], [])
 
@@ -379,7 +380,7 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
         saved = engine.service_ready
         engine.service_ready = lambda: False
         try:
-            r = self.b.applyToHardware("Gaming", "")
+            r = self.b._apply_sync("Gaming", "")
         finally:
             engine.service_ready = saved
         self.assertEqual(r["ok"], False)
@@ -389,11 +390,59 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
 
     def test_apply_single_device_scope(self):
         # Passing a device restricts the report to that device (or fewer).
-        r = self.b.applyToHardware("Gaming", "naga")
+        r = self.b._apply_sync("Gaming", "naga")
         self.assertIsInstance(r, dict)
         self.assertIsInstance(r.get("devices"), list)
         for d in r["devices"]:
             self.assertEqual(d["dev"], "naga")
+
+    def test_apply_worker_lifecycle(self):
+        b = self.new_backend()
+        b.startApplyWorker()
+        self.assertIsNotNone(b._apply_worker)
+        self.assertTrue(b._apply_worker.is_alive())
+        b.shutdownApply()                 # stop() + join() must return promptly
+        self.assertIsNone(b._apply_worker)
+
+    def test_apply_run_does_not_touch_live_but_commit_does(self):
+        # _apply_run is worker-safe (no _live writes); _apply_commit reconciles _live.
+        saved = engine.apply_profile
+        engine.apply_profile = lambda *a, **k: {
+            "naga": {"ok": True, "count": 2, "warnings": [], "error": None}}
+        try:
+            b = self.new_backend()
+            report = b._apply_run("Gaming", "naga")
+            self.assertEqual(b.liveStatus, {})          # run alone leaves _live untouched
+            b._apply_commit("Gaming", report)
+            self.assertEqual(b.liveStatus.get("naga"), "Gaming")
+        finally:
+            engine.apply_profile = saved
+
+    def test_async_apply_delivers_report_via_signal(self):
+        # The off-thread Apply round-trip: enqueue -> worker runs engine -> queued hop
+        # to the GUI thread -> applyFinished(report, tag) + _live committed.
+        saved = engine.apply_profile
+        engine.apply_profile = lambda *a, **k: {
+            "naga": {"ok": True, "count": 3, "warnings": [], "error": None}}
+        got = []
+        b = self.new_backend()
+        b.applyFinished.connect(lambda rep, tag: got.append((rep, tag)))
+        b.startApplyWorker()
+        try:
+            b.applyToHardware("Gaming", "naga", "NAGA_01")
+            for _ in range(400):           # pump events until the queued result lands
+                _app.processEvents()
+                if got:
+                    break
+                time.sleep(0.005)
+        finally:
+            b.shutdownApply()
+            engine.apply_profile = saved
+        self.assertEqual(len(got), 1)
+        rep, tag = got[0]
+        self.assertEqual(tag, "NAGA_01")
+        self.assertTrue(rep["ok"])
+        self.assertEqual(b.liveStatus.get("naga"), "Gaming")   # committed on the GUI thread
 
     def test_preset_name_for_slot(self):
         name = self.b.presetNameFor("Gaming")
@@ -476,7 +525,7 @@ class PersistenceTests(_IsolatedBackendTest):
         engine.apply_profile = (lambda profile, binds, caps, *, autoload=False, combos=None, **_:
                                 captured.update(keys=set(binds)) or {})
         try:
-            r = self.b.applyToHardware("Ghost", "")
+            r = self.b._apply_sync("Ghost", "")
         finally:
             engine.apply_profile = saved
         self.assertEqual(captured["keys"], set())   # no devices in scope
@@ -559,7 +608,7 @@ class DemoModeTests(_IsolatedBackendTest):
         saved = engine.apply_profile
         engine.apply_profile = boom
         try:
-            r = self.b.applyToHardware("Gaming", "")
+            r = self.b._apply_sync("Gaming", "")
         finally:
             engine.apply_profile = saved
         self.assertTrue(r["ok"])
@@ -569,9 +618,20 @@ class DemoModeTests(_IsolatedBackendTest):
         self.assertTrue(self.b.liveStatus)        # live set populated
 
     def test_apply_unknown_profile_is_empty(self):
-        r = self.b.applyToHardware("Ghost", "")
+        r = self.b._apply_sync("Ghost", "")
         self.assertFalse(r["ok"])
         self.assertEqual(r["devices"], [])
+
+    def test_apply_emits_finished_with_tag(self):
+        # demo applyToHardware runs inline and emits applyFinished(report, tag)
+        got = []
+        self.b.applyFinished.connect(lambda rep, tag: got.append((rep, tag)))
+        self.b.applyToHardware("Gaming", "naga", "NAGA_01")
+        self.assertEqual(len(got), 1)
+        rep, tag = got[0]
+        self.assertEqual(tag, "NAGA_01")
+        self.assertTrue(rep["ok"])
+        self.assertTrue(any(d["dev"] == "naga" for d in rep["devices"]))
 
     def test_stop_all_clears_live(self):
         self.b._live = {"tartarus": "Gaming"}

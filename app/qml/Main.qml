@@ -171,6 +171,7 @@ Rectangle {
         syncWheelToLook()   // the disclosed wheel must show the seeded look's colour, not the default
     }
     property string dirtyText: "All changes saved"
+    property bool applying: false   // an Apply is running on the worker thread
     property var applyResult: null          // last Apply-to-hardware report
     property string compareProfile: ""      // profile-diff: compare the active profile against this one
     readonly property var applyHealth: {    // honest footer numbers from the last apply
@@ -299,17 +300,14 @@ Rectangle {
         if (v === "" || v === "—") { showToast("Pick a binding first"); return }
         backend.setBinding(curProfile, curDev, selKey, v, root.bindLayer)
         markDirty()
-        var r = backend.applyToHardware(curProfile, curDev)   // set AND push live, one step
-        root.mergeApplyResult(r)                              // keep the footer health current
-        var warn = bindWarning(r, selKey)                     // did THIS bind get dropped server-side?
-        if (warn) showToast("⚠ not applied — " + warn)
-        else if (root.bindLayer === "shift" && root.holdKey === "")
+        // set AND push live, off the GUI thread (tag=selKey so the result handler can
+        // tell if THIS bind was dropped). Optimistic toast now; problems surface on apply.
+        root.applying = true
+        backend.applyToHardware(curProfile, curDev, selKey)
+        if (root.bindLayer === "shift" && root.holdKey === "")
             showToast(selKey.replace(/_/g, " ") + " → " + v + "  · set a hold key to activate")
-        else if (r.ok) showToast(selKey.replace(/_/g, " ") + " → " + v + "  · live")
-        else {
-            var e = (r.devices && r.devices.length) ? (r.devices[0].error || r.message) : r.message
-            showToast("Bound · " + (e || "not pushed live"))
-        }
+        else
+            showToast(selKey.replace(/_/g, " ") + " → " + v)
     }
     // The skip warning for `key` in an apply report (the daemon drops binds it
     // can't express), or "" if it applied cleanly. Warnings are prefixed
@@ -328,9 +326,9 @@ Rectangle {
         listening = false
         backend.clearBinding(curProfile, curDev, selKey, root.bindLayer)
         capValue = ""; markDirty()
-        var r = backend.applyToHardware(curProfile, curDev)
-        root.mergeApplyResult(r)
-        showToast(r.ok ? "Cleared · live" : "Cleared")
+        root.applying = true
+        backend.applyToHardware(curProfile, curDev, selKey)   // async; result -> onApplyFinished
+        showToast("Cleared")
     }
     function applyActiveProfile() {   // the active profile is always what's live — push it
         if (!backend.deps.inputRemapper) { showToast("Switched to " + curProfile); return }
@@ -461,15 +459,8 @@ Rectangle {
     Timer { id: dirtyTimer; interval: 1400; onTriggered: root.dirtyText = "All changes saved" }
     Timer {
         id: applyTimer; interval: 60
-        onTriggered: {
-            var r = backend.applyToHardware(root.curProfile, "")
-            if (r.devices && r.devices.length) root.applyResult = r   // whole-profile health snapshot
-            if (r.ok) { root.showToast(root.curProfile + " — " + r.message); return }
-            if (root.hasApplyIssue(r)) { resultOverlay.visible = true; return }
-            // benign (empty profile) or daemon unreachable — a toast is enough, no overlay
-            root.showToast((r.devices && r.devices.length) ? ("Switched to " + root.curProfile)
-                                                           : (root.curProfile + " — " + r.message))
-        }
+        // a full-profile apply (tag=""); the result lands in onApplyFinished
+        onTriggered: { root.applying = true; backend.applyToHardware(root.curProfile, "", "") }
     }
     Timer { running: root.lighting; interval: 220; repeat: true; onTriggered: root.litStep++ }
 
@@ -478,6 +469,21 @@ Rectangle {
         target: backend
         function onLightingDevicesReady(snap) { root.onLightingReady(snap) }
         function onLightingOpFailed(msg) { root.showToast(msg || "lighting failed") }
+        function onApplyFinished(report, tag) {
+            root.applying = false
+            if (tag !== "") {                        // a per-bind apply (applyBinding/clearBinding)
+                root.mergeApplyResult(report)        // keep the footer health current
+                var warn = root.bindWarning(report, tag)   // did THIS bind get dropped server-side?
+                if (warn) root.showToast("⚠ not applied — " + warn)
+                return
+            }
+            // a full-profile apply (profile switch)
+            if (report.devices && report.devices.length) root.applyResult = report
+            if (report.ok) { root.showToast(root.curProfile + " — " + report.message); return }
+            if (root.hasApplyIssue(report)) { resultOverlay.visible = true; return }
+            root.showToast((report.devices && report.devices.length) ? ("Switched to " + root.curProfile)
+                                                                     : (root.curProfile + " — " + report.message))
+        }
         function onKeyCaptured(dev, hotspot, label) {
             if (!root.calibrating || dev !== root.curDev) return
             if (backend.demo) {   // simulated capture — track in memory (no disk), no auto-advance
@@ -966,7 +972,7 @@ Rectangle {
             Text { visible: !root.lighting; text: "Preset: " + backend.presetNameFor(root.curProfile); color: root.muted; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
             Text { visible: root.lighting; text: "Lighting: " + root.lightLabel() + " · " + Math.round(root.lightBright) + "%"; color: root.green; font.pixelSize: 12; anchors.verticalCenter: parent.verticalCenter }
         }
-        Text { anchors { right: parent.right; rightMargin: 18; verticalCenter: parent.verticalCenter }text: root.dirtyText; color: root.muted; font.pixelSize: 12 }
+        Text { anchors { right: parent.right; rightMargin: 18; verticalCenter: parent.verticalCenter }text: root.applying ? "Applying…" : root.dirtyText; color: root.muted; font.pixelSize: 12 }
     }
 
     // ================= first-run calibration hint =================

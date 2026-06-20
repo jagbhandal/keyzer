@@ -85,6 +85,34 @@ class _LightingWorker(threading.Thread):
                 pass                       # one bad command must not kill the worker
 
 
+class _QueueWorker(threading.Thread):
+    """Runs submitted callables serially on a daemon thread, to keep blocking work
+    (input-remapper subprocess calls during Apply) off the GUI thread. A daemon thread
+    so a call wedged on a slow daemon is abandonable at exit."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self._q: "queue.Queue" = queue.Queue()
+        self._stop = threading.Event()
+
+    def submit(self, fn) -> None:
+        self._q.put(fn)
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._q.put(None)   # unblock a waiting get()
+
+    def run(self) -> None:
+        while not self._stop.is_set():
+            fn = self._q.get()
+            if fn is None:
+                continue
+            try:
+                fn()
+            except Exception:
+                pass   # one bad task must not kill the worker
+
+
 class _CaptureWorker(QThread):
     """Reads physical presses off one grabbed device on a background thread, one
     'armed' hotspot at a time, and persists + reports each capture. Lives only for
@@ -238,6 +266,7 @@ class Backend(QObject):
     calibrationError = Signal(str)
     lightingDevicesReady = Signal("QVariant")   # async lighting query result {error,devices,sync}
     lightingOpFailed = Signal(str)              # a lighting op failed -> toast
+    applyFinished = Signal("QVariant", str)     # async apply done: (ui report, tag)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -271,6 +300,7 @@ class Backend(QObject):
         self._light_looks = dict(self._settings.get("lightState") or {})
         self._light_seen = set()   # devices present on the last poll (worker-thread only)
         self._light_worker = None  # background lighting worker; started from main.py
+        self._apply_worker = None  # serial worker for off-GUI-thread Apply; from main.py
 
     def _load_profiles(self) -> None:
         """Restore saved profiles, or seed the defaults on first run."""
@@ -667,10 +697,37 @@ class Backend(QObject):
                 if h in self._hotspot_ids.get(dev, set())
                 and h not in self._unavailable.get(dev, set())}
 
-    @Slot(str, str, result="QVariant")
-    def applyToHardware(self, profile: str, dev: str = "") -> dict:
-        """Generate + load an input-remapper preset for the profile — all devices,
-        or just ``dev``. Returns a UI-shaped report (overall + per device)."""
+    @Slot(str, str, str)
+    def applyToHardware(self, profile: str, dev: str = "", tag: str = "") -> None:
+        """Generate + load an input-remapper preset for the profile — all devices, or
+        just ``dev`` — OFF the GUI thread, because a slow/wedged daemon would otherwise
+        freeze the UI for up to ~40s on every bind edit / profile switch. The UI-shaped
+        report is delivered on applyFinished(report, tag); ``tag`` lets the caller
+        correlate the result (e.g. the edited hotspot id)."""
+        if self._demo or self._apply_worker is None:
+            # demo (instant, no subprocess) or no worker (tests) -> run inline
+            report = self._apply_run(profile, dev)
+            self._apply_commit(profile, report)
+            self.applyFinished.emit(report, tag)
+            return
+        self._apply_worker.submit(lambda: self._apply_async(profile, dev, tag))
+
+    def _apply_async(self, profile: str, dev: str, tag: str) -> None:
+        # worker thread: do the slow subprocess apply, then hop to the GUI thread to
+        # reconcile _live (read by liveStatus) and emit the result.
+        report = self._apply_run(profile, dev)
+        QMetaObject.invokeMethod(self, "_onApplyDone", Qt.QueuedConnection,
+                                 Q_ARG(str, profile), Q_ARG(str, tag), Q_ARG("QVariant", report))
+
+    @Slot(str, str, "QVariant")
+    def _onApplyDone(self, profile: str, tag: str, report) -> None:
+        self._apply_commit(profile, report)
+        self.applyFinished.emit(report, tag)
+
+    def _apply_run(self, profile: str, dev: str = "") -> dict:
+        """Build + load the preset (the slow input-remapper subprocess work) and return
+        a UI-shaped report. Pure w.r.t. KEYZER state — does NOT touch _live (the GUI
+        commits that in _apply_commit), so it is safe to run on the apply worker."""
         # only push bindable hotspots that exist (drops orphans + unavailable
         # controls; thumb-pad diagonals are handled via combos).
         prof = self._profiles.get(profile)
@@ -684,7 +741,13 @@ class Backend(QObject):
             src = {d: prof.get(d, {}) for d in self._layouts}
         binds = {d: self._bindable(d, b) for d, b in src.items()}
         if self._demo:
-            return self._demo_apply(profile, binds)
+            devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
+                        "ok": True, "count": len(b), "warnings": [], "error": None}
+                       for d, b in binds.items()]
+            if not devices:
+                return {"ok": False, "message": "Nothing to apply for this profile.", "devices": []}
+            total = sum(x["count"] for x in devices)
+            return {"ok": True, "message": f"{total} bindings live (demo).", "devices": devices}
         # Hypershift layer 2 — same bindable filter, plus the per-device hold key.
         shift = {d: self._bindable(d, (self._shift.get(profile) or {}).get(d)) for d in binds}
         shift_keys = {d: (self._shiftKeys.get(profile) or {}).get(d, "") for d in binds}
@@ -702,33 +765,49 @@ class Backend(QObject):
                    for d, r in report.items()]
         if not devices:
             return {"ok": False, "message": "Nothing to apply for this profile.", "devices": []}
-        for d in devices:                       # keep _live in sync with reality:
-            if d["ok"]:
-                self._live[d["dev"]] = profile  # injected
-            else:
-                self._live.pop(d["dev"], None)  # reverted / not captured -> not live
-        self.liveChanged.emit()
         total = sum(d["count"] for d in devices)
         all_ok = all(d["ok"] for d in devices)
         msg = f"{total} bindings live." if all_ok else "Applied with issues — see below."
         return {"ok": all_ok, "message": msg, "devices": devices}
 
-    def _demo_apply(self, profile: str, binds: dict) -> dict:
-        """Simulated apply for demo mode — updates the live set and returns the same
-        report shape as applyToHardware, with no input-remapper involved."""
-        devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
-                    "ok": True, "count": len(b), "warnings": [], "error": None}
-                   for d, b in binds.items()]
+    def _apply_commit(self, profile: str, report: dict) -> None:
+        """Reconcile _live with an apply report — GUI thread only (liveStatus reads
+        _live, so mutating it off-thread could tear a concurrent read)."""
+        devices = (report or {}).get("devices") or []
         if not devices:
-            return {"ok": False, "message": "Nothing to apply for this profile.", "devices": []}
-        for x in devices:
-            if x["count"]:
-                self._live[x["dev"]] = profile
+            return
+        for d in devices:
+            if d.get("ok") and d.get("count", 0) > 0:
+                self._live[d["dev"]] = profile   # injected
             else:
-                self._live.pop(x["dev"], None)
+                self._live.pop(d["dev"], None)    # reverted / not captured -> not live
         self.liveChanged.emit()
-        total = sum(x["count"] for x in devices)
-        return {"ok": True, "message": f"{total} bindings live (demo).", "devices": devices}
+
+    def _apply_sync(self, profile: str, dev: str = "") -> dict:
+        """Synchronous apply (run + commit) returning the report — used by tests and by
+        the inline (demo / no-worker) path."""
+        report = self._apply_run(profile, dev)
+        self._apply_commit(profile, report)
+        return report
+
+    @Slot()
+    def startApplyWorker(self) -> None:
+        """Start the serial Apply worker so applyToHardware runs off the GUI thread.
+        Called from main.py once the UI is up."""
+        if self._demo or self._apply_worker is not None:
+            return
+        self._apply_worker = _QueueWorker()
+        self._apply_worker.start()
+
+    @Slot()
+    def shutdownApply(self) -> None:
+        """App is quitting — stop the Apply worker (daemon thread; a wedged apply is
+        abandoned, not waited on). Wired to QGuiApplication.aboutToQuit in main.py."""
+        w = self._apply_worker
+        if w is not None:
+            w.stop()
+            w.join(timeout=1.0)
+            self._apply_worker = None
 
     @Property("QVariant", notify=liveChanged)
     def liveStatus(self) -> dict:

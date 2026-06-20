@@ -58,6 +58,10 @@ def main() -> int:
     # OpenRazer DeviceManager can block ~25s when the daemon is down).
     app.aboutToQuit.connect(backend.shutdownLighting)
     backend.startLightingWatcher()
+    # Run Apply off the GUI thread too: a slow/wedged input-remapper daemon would
+    # otherwise freeze the UI for up to ~40s on every bind edit / profile switch.
+    app.aboutToQuit.connect(backend.shutdownApply)
+    backend.startApplyWorker()
     view.rootContext().setContextProperty("backend", backend)
     view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
     view.setColor("#0b0b0e")

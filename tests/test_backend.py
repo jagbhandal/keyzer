@@ -1087,5 +1087,74 @@ class HypershiftTests(_IsolatedBackendTest):
         self.assertEqual(b2.shiftKeyFor("Gaming", "tartarus"), "TAR_11")
 
 
+class ThumbModeTests(_IsolatedBackendTest):
+    """Per-device thumb 4-way/8-way mode: get/set, apply plumbing, and that the
+    setting survives rename/duplicate/delete/export/restart (parity with Hypershift)."""
+
+    def setUp(self):
+        super().setUp()
+        self.b = self.new_backend()
+
+    def test_default_is_unset(self):
+        self.assertEqual(self.b.thumbModeFor("Gaming", "tartarus"), "")
+
+    def test_set_and_clear(self):
+        self.b.setThumbMode("Gaming", "tartarus", "4way")
+        self.assertEqual(self.b.thumbModeFor("Gaming", "tartarus"), "4way")
+        self.b.setThumbMode("Gaming", "tartarus", "")
+        self.assertEqual(self.b.thumbModeFor("Gaming", "tartarus"), "")
+
+    def test_bogus_mode_clears(self):
+        self.b.setThumbMode("Gaming", "tartarus", "4way")
+        self.b.setThumbMode("Gaming", "tartarus", "sideways")   # invalid -> cleared
+        self.assertEqual(self.b.thumbModeFor("Gaming", "tartarus"), "")
+
+    def test_apply_passes_thumb_modes(self):
+        self.b.setThumbMode("Gaming", "tartarus", "4way")
+        cap = {}
+        saved = engine.apply_profile
+
+        def spy(profile, binds, caps, *, autoload=False, combos=None,
+                shift=None, shift_keys=None, thumb_modes=None, **_):
+            cap["thumb_modes"] = thumb_modes
+            return {}
+
+        engine.apply_profile = spy
+        try:
+            self.b.applyToHardware("Gaming", "")
+        finally:
+            engine.apply_profile = saved
+        self.assertEqual(cap["thumb_modes"]["tartarus"], "4way")
+
+    def test_rename_carries_thumb_mode(self):
+        self.b.setThumbMode("Work", "tartarus", "4way")
+        self.b.renameProfile("Work", "Office")
+        self.assertEqual(self.b.thumbModeFor("Office", "tartarus"), "4way")
+        self.assertEqual(self.b.thumbModeFor("Work", "tartarus"), "")
+
+    def test_duplicate_deep_copies_thumb_mode(self):
+        self.b.setThumbMode("Work", "tartarus", "4way")
+        self.b.duplicateProfile("Work", "Work2")
+        self.assertEqual(self.b.thumbModeFor("Work2", "tartarus"), "4way")   # carried
+        self.b.setThumbMode("Work2", "tartarus", "8way")
+        self.assertEqual(self.b.thumbModeFor("Work", "tartarus"), "4way")    # source intact
+        self.assertEqual(self.b.thumbModeFor("Work2", "tartarus"), "8way")   # copy diverges
+
+    def test_delete_drops_thumb_mode(self):
+        self.b.setThumbMode("Work", "tartarus", "4way")
+        self.b.deleteProfile("Work")
+        self.assertEqual(self.b.thumbModeFor("Work", "tartarus"), "")
+
+    def test_export_import_round_trips_thumb_mode(self):
+        self.b.setThumbMode("Work", "tartarus", "4way")
+        imp = self.b.importProfile(self.b.exportProfile("Work")["json"])
+        self.assertEqual(self.b.thumbModeFor(imp["name"], "tartarus"), "4way")
+
+    def test_persists_across_restart(self):
+        self.b.setThumbMode("Gaming", "tartarus", "4way")
+        b2 = self.new_backend()
+        self.assertEqual(b2.thumbModeFor("Gaming", "tartarus"), "4way")
+
+
 if __name__ == "__main__":
     unittest.main()

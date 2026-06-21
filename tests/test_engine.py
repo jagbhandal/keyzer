@@ -234,6 +234,49 @@ class BuildPresetTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertIn("MISSING", warnings[0])
 
+    def test_4way_mode_drops_diagonals_for_smooth_movement(self):
+        # 4-way: the diagonal combo is dropped entirely, so a diagonal is the natural
+        # overlap of its two cardinals — no longest-match combo to replace them. The
+        # diagonal bind is silently skipped (it's auto in 4-way), not warned.
+        combos = {"TAR_TPAD_NE": ["TAR_TPAD_N", "TAR_TPAD_E"]}
+        binds = {"TAR_TPAD_N": "W", "TAR_TPAD_E": "D", "TAR_TPAD_NE": "Tab"}
+        mappings, warnings = engine.build_preset(
+            binds, self.captures, combos, thumb_mode="4way")
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(mappings), 2)                       # just the two cardinals
+        for m in mappings:
+            self.assertEqual(len(m["input_combination"]), 1)    # each a single key
+        self.assertNotIn("Tab", [m["output_symbol"] for m in mappings])
+
+    def test_8way_mode_keeps_diagonal_combos(self):
+        combos = {"TAR_TPAD_NE": ["TAR_TPAD_N", "TAR_TPAD_E"]}
+        binds = {"TAR_TPAD_N": "W", "TAR_TPAD_E": "D", "TAR_TPAD_NE": "Tab"}
+        mappings, warnings = engine.build_preset(
+            binds, self.captures, combos, thumb_mode="8way")
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(mappings), 3)                       # cardinals + diagonal combo
+        diag = [m for m in mappings if m["output_symbol"] == "Tab"][0]
+        self.assertEqual(len(diag["input_combination"]), 2)
+
+    def test_default_mode_keeps_diagonals(self):
+        # no thumb_mode arg -> backward-compatible 8-way behaviour
+        combos = {"TAR_TPAD_NE": ["TAR_TPAD_N", "TAR_TPAD_E"]}
+        mappings, _ = engine.build_preset(
+            {"TAR_TPAD_NE": "Tab"}, self.captures, combos)
+        self.assertEqual(len(mappings), 1)
+        self.assertEqual(len(mappings[0]["input_combination"]), 2)
+
+    def test_4way_mode_drops_diagonal_in_shift_layer_too(self):
+        # 4-way must also strip diagonals from the Hypershift layer.
+        combos = {"TAR_TPAD_NE": ["TAR_TPAD_N", "TAR_TPAD_E"]}
+        mappings, warnings = engine.build_preset(
+            {"TAR_TPAD_N": "W"}, self.captures, combos,
+            shift_binds={"TAR_TPAD_NE": "Tab", "TAR_TPAD_E": "D"},
+            shift_key="TAR_01", thumb_mode="4way")
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(mappings), 2)                       # base N->W + shift E->D
+        self.assertNotIn("Tab", [m["output_symbol"] for m in mappings])
+
     def test_mixed_batch_collects_all_warnings(self):
         binds = {"TAR_01": "Esc", "TAR_08": "W", "TAR_TPAD": "WASD", "TAR_99": "X"}
         mappings, warnings = engine.build_preset(binds, self.captures)

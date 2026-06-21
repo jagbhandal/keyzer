@@ -212,13 +212,28 @@ def _input_config(cap: dict) -> dict:
 
 
 def build_preset(binds: dict, captures: dict, combos: dict | None = None,
-                 *, shift_binds: dict | None = None, shift_key: str | None = None) -> tuple[list[dict], list[str]]:
+                 *, shift_binds: dict | None = None, shift_key: str | None = None,
+                 thumb_mode: str | None = None) -> tuple[list[dict], list[str]]:
     """Join binds with captures into input-remapper mappings (+ skip warnings).
 
     A hotspot listed in ``combos`` (e.g. an 8-way diagonal -> its two cardinal
     switches) maps to the COMBINATION of its members' captures; input-remapper's
-    longest-match then fires it instead of the members' individual mappings."""
+    longest-match then fires it instead of the members' individual mappings.
+
+    ``thumb_mode="4way"`` drops the thumb diagonals entirely, so a diagonal is the
+    natural overlap of its two cardinals (smooth blended movement) instead of a
+    longest-match combination that replaces the cardinals' outputs. ``"8way"`` / None
+    keeps the diagonals bindable as combos (the default, backward-compatible)."""
     combos = combos or {}
+    if thumb_mode == "4way":
+        # 4-way (movement): drop the diagonal combos so a diagonal is the natural overlap
+        # of its two cardinals (no longest-match combo to replace them). The combo hotspots
+        # ARE the diagonals — declared in the layout — so use that metadata, not the id text.
+        diagonals = set(combos)
+        binds = {k: v for k, v in binds.items() if k not in diagonals}
+        if shift_binds:
+            shift_binds = {k: v for k, v in shift_binds.items() if k not in diagonals}
+        combos = {}
     mappings, warnings = [], []
 
     def inputs_for(hotspot):
@@ -495,11 +510,13 @@ def record_capture(dev_id: str, device_name: str, hotspot: str, entry: dict,
 
 def apply_profile(profile: str, binds_by_device: dict, captures: dict,
                   *, autoload: bool = False, combos: dict | None = None,
-                  shift: dict | None = None, shift_keys: dict | None = None) -> dict:
+                  shift: dict | None = None, shift_keys: dict | None = None,
+                  thumb_modes: dict | None = None) -> dict:
     """Generate + apply a preset per device. binds_by_device: {dev: {hotspot:value}};
     captures: the captures.json dict. ``shift``/``shift_keys`` add the Hypershift
-    second layer ({dev: {hotspot:value}} and {dev: hold-hotspot}). Returns a
-    per-device result report."""
+    second layer ({dev: {hotspot:value}} and {dev: hold-hotspot}). ``thumb_modes``
+    ({dev: "4way"|"8way"}) selects the per-device thumb mode. Returns a per-device
+    result report."""
     if not available():
         return {"_error": "input-remapper isn't installed"}
     if not service_ready():
@@ -527,7 +544,8 @@ def apply_profile(profile: str, binds_by_device: dict, captures: dict,
         mappings, warnings = build_preset(binds, cap.get("captured") or {},
                                           (combos or {}).get(dev_id),
                                           shift_binds=(shift or {}).get(dev_id),
-                                          shift_key=(shift_keys or {}).get(dev_id))
+                                          shift_key=(shift_keys or {}).get(dev_id),
+                                          thumb_mode=(thumb_modes or {}).get(dev_id))
         if not mappings:
             # The active profile leaves this device unbound — revert it to hardware
             # defaults (stop injecting + drop its autoload) so "active profile = live"

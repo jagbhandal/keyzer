@@ -208,6 +208,7 @@ Rectangle {
     readonly property var viewObj: (device && curView && device.views[curView]) ? device.views[curView] : null
     readonly property var viewNames: backend.viewNames(curDev)
     property string bindLayer: "base"            // "base" | "shift" (Hypershift layer 2)
+    property string thumbMode: "8way"            // per-device thumb pad: "4way" | "8way"
     property bool pickingHoldKey: false      // next hotspot click designates the hold key
     readonly property var bindMap: {
         var src = root.bindLayer === "shift" ? backend.shiftBindings : backend.bindings
@@ -251,6 +252,18 @@ Rectangle {
     function selectKey(id) { selKey = id; capValue = ""; listening = false }
     function deselect() { selKey = ""; capValue = ""; listening = false; pickingHoldKey = false }
     function setLayer(l) { root.bindLayer = l; root.pickingHoldKey = false; root.deselect() }
+    function refreshThumbMode() { root.thumbMode = backend.thumbModeFor(root.curProfile, root.curDev) || "8way" }
+    function setThumbMode(mode) {
+        if (mode === root.thumbMode) return
+        backend.setThumbMode(root.curProfile, root.curDev, mode)
+        root.thumbMode = mode
+        root.applying = true
+        backend.applyToHardware(root.curProfile, root.curDev, "thumb")   // only this device changed
+        root.showToast(mode === "4way" ? "Thumb: 4-way — smooth movement, diagonals auto"
+                                       : "Thumb: 8-way — all 8 directions bindable")
+    }
+    onCurDevChanged: refreshThumbMode()
+    onCurProfileChanged: refreshThumbMode()
     function setHoldKeyTo(id) {   // designate a hotspot as the shift hold key, then re-apply
         var clearing = id === root.holdKey
         backend.setShiftKey(root.curProfile, root.curDev, clearing ? "" : id)
@@ -383,6 +396,21 @@ Rectangle {
         applyActiveProfile()   // restore live binds (calibration had stopped them)
     }
     function toggleCalibrate() { if (root.calibrating) exitCalibrate(); else enterCalibrate() }
+    // The single place panel switching lives. Customize (bind) / Lighting / Calibrate /
+    // Align are mutually-exclusive tabs: setPanel tears down whatever we're leaving and
+    // enters the chosen one — replacing the mutual-exclusion logic that used to be
+    // duplicated inside each toggle.
+    function currentPanel() { return root.calibrating ? "calibrate" : root.lighting ? "lighting" : root.aligning ? "align" : "bind" }
+    function setPanel(mode) {
+        if (currentPanel() === mode) return
+        if (root.calibrating && mode !== "calibrate") exitCalibrate()
+        if (root.lighting && mode !== "lighting") { root.lighting = false; backend.setSetting("lighting", false) }
+        if (root.aligning && mode !== "align") root.aligning = false
+        root.deselect()
+        if (mode === "calibrate") enterCalibrate()
+        else if (mode === "lighting") { root.lighting = true; backend.setSetting("lighting", true); enterLighting() }
+        else if (mode === "align") root.aligning = true
+    }
     // Keys that are modifiers on their own — a lone press of one isn't a binding.
     readonly property var modifierKeys: [Qt.Key_Control, Qt.Key_Shift, Qt.Key_Alt, Qt.Key_Meta,
                                          Qt.Key_Super_L, Qt.Key_Super_R, Qt.Key_AltGr]
@@ -414,12 +442,14 @@ Rectangle {
         capSummary = backend.captureSummary()
         capSource = backend.capturesSource()
         curProfile = backend.activeProfile
+        refreshThumbMode()
         root.lightState = backend.lightState()   // restore the saved look(s) across sessions
         // offscreen QA: drive initial state from env vars
         var q = backend.qaState()
         if (q.KEYZER_DEV) switchDevice(q.KEYZER_DEV)
         if (q.KEYZER_VIEW) curView = q.KEYZER_VIEW
         if (q.KEYZER_PROFILE) curProfile = q.KEYZER_PROFILE
+        if (q.KEYZER_THUMBMODE) thumbMode = q.KEYZER_THUMBMODE
         if (q.KEYZER_LIGHTING === "1") lighting = true
         if (q.KEYZER_ALIGN === "1") aligning = true
         if (q.KEYZER_SELECT) selectKey(q.KEYZER_SELECT)
@@ -598,6 +628,27 @@ Rectangle {
         MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: pill.picked() }
     }
 
+    // a header tab — Synapse-style: click to show that panel; the active one stays lit.
+    component Tab: Rectangle {
+        id: tab
+        property string label: ""
+        property bool active: false
+        signal picked()
+        implicitWidth: tabTxt.implicitWidth + 22; implicitHeight: 26; radius: 7
+        color: active ? root.greenDim : (tabMa.containsMouse && tab.enabled ? root.alpha(root.green, 0.08) : "transparent")
+        border.width: 1; border.color: active ? root.green : "transparent"
+        opacity: tab.enabled ? 1 : 0.4
+        Text {
+            id: tabTxt; anchors.centerIn: parent; text: tab.label
+            font.pixelSize: 11; font.bold: true; font.letterSpacing: 1
+            color: tab.active ? root.greenTxt : root.muted
+        }
+        MouseArea {
+            id: tabMa; anchors.fill: parent; hoverEnabled: true; enabled: tab.enabled
+            cursorShape: Qt.PointingHandCursor; onClicked: tab.picked()
+        }
+    }
+
     component Hotspot: Item {
         id: hs
         property var k
@@ -610,10 +661,13 @@ Rectangle {
         property bool captured: false      // user has a recorded code for this key
         property bool armed: false         // awaiting a press for this key right now
         property bool combo: false         // derived 8-way diagonal — not directly captured
+        // a diagonal while the thumb is in 4-way mode is auto (both cardinals fire), so it
+        // isn't separately bindable — render it dimmed + inert.
+        readonly property bool comboOff: hs.combo && root.thumbMode === "4way"
         property bool isHold: false        // the Hypershift hold key (shown in the shift layer)
         property string diff: ""           // profile-diff: ""|"same"|"changed"|"here"|"there"
         width: k.w; height: k.h
-        opacity: hs.unavailable !== "" ? 0.45 : 1
+        opacity: hs.unavailable !== "" ? 0.45 : (hs.comboOff ? 0.4 : 1)
         Component.onCompleted: { var o = root.ov[root.ovKey(k.id)]; x = o ? o.x : k.x; y = o ? o.y : k.y }
         // ---- signature: the lit selected key. layered halos breathing on the
         // shared pulse make the chosen key read like a glowing, powered filament.
@@ -728,6 +782,7 @@ Rectangle {
             enabled: !root.aligning && !root.lighting
             onTapped: {
                 if (hs.unavailable !== "") { root.showToast(hs.unavailable); return }
+                if (hs.comboOff) { root.showToast("Diagonals are automatic in 4-way mode"); return }
                 if (root.pickingHoldKey) {
                     if (hs.combo) root.showToast("Pick a single key as the hold key")
                     else root.setHoldKeyTo(hs.k.id)
@@ -923,18 +978,15 @@ Rectangle {
                 }
                 MouseArea { id: lpMa; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.stopHardware() }
             }
-            FlatSwitch {
-                anchors.verticalCenter: parent.verticalCenter; label: "CALIBRATE"
-                enabled: backend.deps.inputRemapper; on: root.calibrating
-                accent: root.alpha(root.amber, 0.5); accentBorder: root.amber
-                onToggled: root.toggleCalibrate()
+            Row {
+                id: tabBar
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 2
+                Tab { label: "CUSTOMIZE"; active: !root.lighting && !root.aligning && !root.calibrating; onPicked: root.setPanel("bind") }
+                Tab { label: "LIGHTING"; enabled: backend.deps.openrazer; active: root.lighting; onPicked: root.setPanel("lighting") }
+                Tab { label: "CALIBRATE"; enabled: backend.deps.inputRemapper; active: root.calibrating; onPicked: root.setPanel("calibrate") }
+                Tab { label: "ALIGN"; active: root.aligning; onPicked: root.setPanel("align") }
             }
-            FlatSwitch {
-                anchors.verticalCenter: parent.verticalCenter; label: "LIGHTING"
-                enabled: backend.deps.openrazer; on: root.lighting
-                onToggled: { root.lighting = !root.lighting; backend.setSetting("lighting", root.lighting); if (root.lighting) { root.aligning = false; if (root.calibrating) root.exitCalibrate(); root.deselect(); root.enterLighting() } }
-            }
-            FlatSwitch { anchors.verticalCenter: parent.verticalCenter; label: "ALIGN"; on: root.aligning; accent: "#1d7fa6"; accentBorder: root.cyan; onToggled: { root.aligning = !root.aligning; if (root.aligning) { root.lighting = false; if (root.calibrating) root.exitCalibrate() } root.deselect() } }
         }
     }
 
@@ -1491,6 +1543,33 @@ Rectangle {
                                     font.pixelSize: 12; font.bold: true
                                 }
                                 MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.setLayer(modelData.k) }
+                            }
+                        }
+                    }
+                }
+                Rectangle {   // thumb mode — 4-way (movement) / 8-way (discrete); thumb view only
+                    visible: root.curView === "thumb"
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: thumbModeRow.implicitWidth + 6; height: 30; radius: 9
+                    color: root.panel2; border.width: 1; border.color: root.lineC
+                    Row {
+                        id: thumbModeRow; anchors.centerIn: parent; spacing: 3
+                        Repeater {
+                            model: [{ k: "4way", t: "4-way" }, { k: "8way", t: "8-way" }]
+                            Rectangle {
+                                property bool sel: root.thumbMode === modelData.k
+                                width: tmTxt.implicitWidth + 24; height: 24; radius: 6
+                                color: sel ? root.greenDim : "transparent"
+                                border.width: sel ? 1 : 0; border.color: root.green
+                                Text {
+                                    id: tmTxt; anchors.centerIn: parent; text: modelData.t
+                                    color: sel ? root.greenTxt : root.muted
+                                    font.pixelSize: 12; font.bold: true
+                                }
+                                MouseArea {
+                                    anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                    onClicked: root.setThumbMode(modelData.k)
+                                }
                             }
                         }
                     }

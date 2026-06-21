@@ -27,6 +27,7 @@ STATES = [
     ("tartarus / listening (sticky)", {"KEYZER_DEV": "tartarus", "KEYZER_SELECT": "TAR_08", "KEYZER_LISTEN": "1"}),
     ("tartarus / keypad + align", {"KEYZER_DEV": "tartarus", "KEYZER_ALIGN": "1"}),
     ("tartarus / thumb (8-way)", {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "thumb"}),
+    ("tartarus / thumb (4-way mode)", {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "thumb", "KEYZER_THUMBMODE": "4way"}),
     ("tartarus / thumb + align", {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "thumb", "KEYZER_ALIGN": "1"}),
     ("naga / top", {"KEYZER_DEV": "naga", "KEYZER_VIEW": "top"}),
     ("naga / top + selected", {"KEYZER_DEV": "naga", "KEYZER_VIEW": "top", "KEYZER_SELECT": "NAGA_01"}),

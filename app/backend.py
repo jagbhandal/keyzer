@@ -293,6 +293,7 @@ class Backend(QObject):
         self._cal_dev = ""
         self._shift = {}          # Hypershift layer 2: {profile: {device: {hotspot: value}}}
         self._shiftKeys = {}      # the hold-to-shift key: {profile: {device: hotspot}}
+        self._thumbModes = {}     # per-thumb 4-way/8-way: {profile: {device: "4way"|"8way"}}
         self._load_profiles()
         # ----- lighting persistence + reconnect watcher -----
         self._light_lock = threading.Lock()
@@ -323,6 +324,8 @@ class Backend(QObject):
                 self._shift = saved["shift"]              # v2: Hypershift layer 2
             if isinstance(saved.get("shiftKeys"), dict):
                 self._shiftKeys = saved["shiftKeys"]
+            if isinstance(saved.get("thumbModes"), dict):
+                self._thumbModes = saved["thumbModes"]   # v2: per-device thumb mode
         else:
             self._profiles = _default_profiles()
             self._active = "Gaming"
@@ -337,7 +340,8 @@ class Backend(QObject):
                          {"version": 2, "active": self._active,
                           "live": self._live, "settings": self._settings,
                           "profiles": self._profiles,
-                          "shift": self._shift, "shiftKeys": self._shiftKeys})
+                          "shift": self._shift, "shiftKeys": self._shiftKeys,
+                          "thumbModes": self._thumbModes})
 
     @Slot(str, "QVariant", result="QVariant")
     def getSetting(self, key: str, default):
@@ -348,6 +352,24 @@ class Backend(QObject):
     def setSetting(self, key: str, value) -> None:
         self._settings[key] = value
         self._save()
+
+    @Slot(str, str, result=str)
+    def thumbModeFor(self, profile: str, dev: str) -> str:
+        """A device's thumb mode for a profile: "4way", "8way", or "" (unset = 8-way)."""
+        return (self._thumbModes.get(profile) or {}).get(dev, "")
+
+    @Slot(str, str, str)
+    def setThumbMode(self, profile: str, dev: str, mode: str) -> None:
+        """Set ("4way"/"8way") or clear ("") a device's thumb mode for a profile."""
+        per = self._thumbModes.setdefault(profile, {})
+        if mode in ("4way", "8way"):
+            per[dev] = mode
+        else:
+            per.pop(dev, None)
+        if not per:
+            self._thumbModes.pop(profile, None)
+        self._save()
+        self.bindingsChanged.emit()
 
     # ----- geometry (single source of truth) -----
     @Property("QVariant", constant=True)
@@ -479,6 +501,7 @@ class Backend(QObject):
         self._profiles = {new if k == old else k: v for k, v in self._profiles.items()}
         self._shift = {new if k == old else k: v for k, v in self._shift.items()}
         self._shiftKeys = {new if k == old else k: v for k, v in self._shiftKeys.items()}
+        self._thumbModes = {new if k == old else k: v for k, v in self._thumbModes.items()}
         if self._active == old:
             self._active = new
         self._commit()
@@ -494,6 +517,7 @@ class Backend(QObject):
         self._profiles[new] = copy.deepcopy(self._profiles[src])
         self._shift[new] = copy.deepcopy(self._shift.get(src, {}))
         self._shiftKeys[new] = copy.deepcopy(self._shiftKeys.get(src, {}))
+        self._thumbModes[new] = copy.deepcopy(self._thumbModes.get(src, {}))
         self._active = new
         self._commit()
         return {"ok": True, "name": new}
@@ -507,6 +531,7 @@ class Backend(QObject):
         del self._profiles[name]
         self._shift.pop(name, None)
         self._shiftKeys.pop(name, None)
+        self._thumbModes.pop(name, None)
         if self._active == name:
             self._active = next(iter(self._profiles))
         self._commit()
@@ -522,7 +547,8 @@ class Backend(QObject):
         if name not in self._profiles:
             return {"ok": False, "error": "No such profile"}
         payload = {"keyzer": 1, "name": name, "binds": self._profiles[name],
-                   "shift": self._shift.get(name, {}), "holdKeys": self._shiftKeys.get(name, {})}
+                   "shift": self._shift.get(name, {}), "holdKeys": self._shiftKeys.get(name, {}),
+                   "thumbModes": self._thumbModes.get(name, {})}
         return {"ok": True, "name": name, "json": json.dumps(payload, indent=2)}
 
     @Slot(str, result="QVariant")
@@ -548,6 +574,9 @@ class Backend(QObject):
         hold = data.get("holdKeys")
         if isinstance(hold, dict):
             self._shiftKeys[name] = {d: h for d, h in hold.items() if isinstance(h, str)}
+        modes = data.get("thumbModes")
+        if isinstance(modes, dict):
+            self._thumbModes[name] = {d: m for d, m in modes.items() if m in ("4way", "8way")}
         self._active = name
         self._commit()
         return {"ok": True, "name": name}
@@ -731,7 +760,9 @@ class Backend(QObject):
         binds = {d: self._bindable(d, b) for d, b in src.items()}
         shift = {d: self._bindable(d, (self._shift.get(profile) or {}).get(d)) for d in binds}
         shift_keys = {d: (self._shiftKeys.get(profile) or {}).get(d, "") for d in binds}
-        return {"profile": profile, "binds": binds, "shift": shift, "shift_keys": shift_keys}
+        thumb_modes = {d: (self._thumbModes.get(profile) or {}).get(d, "") for d in binds}
+        return {"profile": profile, "binds": binds, "shift": shift,
+                "shift_keys": shift_keys, "thumb_modes": thumb_modes}
 
     def _apply_async(self, profile: str, payload: dict, tag: str) -> None:
         # worker thread: do the slow subprocess apply, then hop to the GUI thread to
@@ -764,7 +795,8 @@ class Backend(QObject):
         # only "turn it off" — there is no reset-on-restart mode.
         report = engine.apply_profile(profile, binds, engine.load_captures(),
                                       autoload=True, combos=self._combos,
-                                      shift=payload["shift"], shift_keys=payload["shift_keys"])
+                                      shift=payload["shift"], shift_keys=payload["shift_keys"],
+                                      thumb_modes=payload.get("thumb_modes"))
         if "_error" in report:
             return {"ok": False, "message": report["_error"], "devices": []}
         devices = [{"dev": d, "name": self._layouts.get(d, {}).get("name", d),
@@ -1035,5 +1067,5 @@ class Backend(QObject):
                  "KEYZER_LIGHTING", "KEYZER_ALIGN", "KEYZER_RESULT",
                  "KEYZER_DIALOG", "KEYZER_LIVE", "KEYZER_LIGHTPANEL", "KEYZER_HINT",
                  "KEYZER_LISTEN", "KEYZER_CALIBRATE", "KEYZER_SHIFT", "KEYZER_COMPARE",
-                 "KEYZER_SHOT", "KEYZER_LIGHTFX", "KEYZER_LIGHTZONE")
+                 "KEYZER_SHOT", "KEYZER_LIGHTFX", "KEYZER_LIGHTZONE", "KEYZER_THUMBMODE")
         return {n: os.environ.get(n, "") for n in names}

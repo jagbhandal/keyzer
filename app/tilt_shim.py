@@ -49,9 +49,17 @@ except ImportError:  # pragma: no cover - exercised only where evdev is absent
 
 VENDOR = 0x1532
 PRODUCT = 0x008F           # Naga Pro (wired)
-MOUSE_IFACE = ".0001"      # the interface whose hidraw carries the tilt bits
 UINPUT_NAME = "KEYZER Naga Tilt"
 HID_REPORT_LEN = 256       # generous read size for one HID report
+
+# Every USB HID mouse interface opens its report descriptor with exactly these
+# bytes — Usage Page (Generic Desktop), Usage (Mouse), Collection (Application).
+# This is the universal HID definition of a mouse, not anything Naga-specific, so
+# it stays a protocol constant here (device VID/PID live in layouts.json). We pick
+# the Naga's hidraw by it — the tilt bits ride in the mouse report — rather than
+# by node number or HID instance counter, both unstable across boots and plug
+# events (the live device reports counters like .001F, never .0001).
+MOUSE_USAGE_PREFIX = bytes((0x05, 0x01, 0x09, 0x02, 0xA1, 0x01))
 
 # The synthetic buttons the two tilt directions emit. BTN_TRIGGER_HAPPY1/2 are
 # "extra device button" codes that don't collide with the mouse's real buttons
@@ -62,21 +70,39 @@ else:  # so the module still imports for the pure-logic tests
     CODE = {LEFT: 0x2C0, RIGHT: 0x2C1}
 
 
-def _select_mouse_hidraw(candidates, vendor=VENDOR, product=PRODUCT, iface=MOUSE_IFACE):
-    """Pick the hidraw node for the mouse interface from pre-scanned candidates.
+def _descriptor_is_mouse(report_descriptor: bytes) -> bool:
+    """True if a HID report descriptor's PRIMARY collection is a Mouse.
 
-    ``candidates`` is a list of dicts ``{"name", "hid_id", "iface"}`` (name like
-    "hidraw0", hid_id like "0003:00001532:0000008F", iface like
-    "0003:1532:008F.0001"). Pure — no filesystem — so it is unit-testable.
-    Returns the matching ``/dev/<name>`` or None.
+    Anchored at the start, not a substring search: we want the interface whose
+    own top-level collection is the mouse (the one carrying the tilt bits), not
+    one that merely nests a mouse collection somewhere inside. Pure (operates on
+    bytes) so it is unit-testable without hardware.
+    """
+    return report_descriptor.startswith(MOUSE_USAGE_PREFIX)
+
+
+def _select_mouse_hidraw(candidates, vendor=VENDOR, product=PRODUCT):
+    """Pick the hidraw node for the Naga's mouse interface from pre-scanned
+    candidates.
+
+    ``candidates`` is a list of dicts ``{"name", "hid_id", "is_mouse",
+    "interface"}`` (name like "hidraw0", hid_id like "0003:00001532:0000008F",
+    is_mouse decoded from the report descriptor, interface like "00"). We match
+    the VID/PID and require the report descriptor to declare a Mouse usage, then
+    take the lowest USB interface number for a deterministic choice. Pure — no
+    filesystem — so it is unit-testable. Returns ``/dev/<name>`` or None.
     """
     vp = f"{vendor:04X}"
     pp = f"{product:04X}"
+    matches = []
     for c in candidates:
         hid = (c.get("hid_id") or "").upper()
-        if vp in hid and pp in hid and (c.get("iface") or "").upper().endswith(iface.upper()):
-            return f"/dev/{c['name']}"
-    return None
+        if vp in hid and pp in hid and c.get("is_mouse"):
+            matches.append(c)
+    if not matches:
+        return None
+    matches.sort(key=lambda c: c.get("interface") or "")
+    return f"/dev/{matches[0]['name']}"
 
 
 def _scan_hidraw_candidates(sysfs_glob="/sys/class/hidraw/hidraw*"):
@@ -93,11 +119,23 @@ def _scan_hidraw_candidates(sysfs_glob="/sys/class/hidraw/hidraw*"):
                         break
         except OSError:
             continue
+        # Only the prefix matters (_descriptor_is_mouse anchors at the start), so
+        # read just those bytes rather than the whole descriptor.
         try:
-            iface = os.path.basename(os.path.realpath(dev))
+            with open(os.path.join(dev, "report_descriptor"), "rb") as f:
+                is_mouse = _descriptor_is_mouse(f.read(len(MOUSE_USAGE_PREFIX)))
         except OSError:
-            iface = ""
-        out.append({"name": os.path.basename(hr), "hid_id": hid_id, "iface": iface})
+            is_mouse = False
+        # The HID device dir's parent is the USB interface dir (e.g. ".../3-1.4.1:1.0");
+        # its bInterfaceNumber disambiguates a device that exposes more than one mouse.
+        try:
+            usb_iface_dir = os.path.dirname(os.path.realpath(dev))
+            with open(os.path.join(usb_iface_dir, "bInterfaceNumber")) as f:
+                interface = f.read().strip()
+        except OSError:
+            interface = ""
+        out.append({"name": os.path.basename(hr), "hid_id": hid_id,
+                    "is_mouse": is_mouse, "interface": interface})
     return out
 
 

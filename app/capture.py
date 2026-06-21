@@ -214,8 +214,8 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
     print(f"\n=== {dev_layout.get('name', dev_id)} — {len(hotspots)} keys "
           f"(device '{name}', {len(nodes)} nodes) ===")
     if nskip:
-        print(f"  ({nskip} keys skipped: 8-way diagonals are derived, and some controls "
-              "emit no Linux event — e.g. the wheel tilt)")
+        print(f"  ({nskip} keys skipped: 8-way diagonals are derived from their cardinals; "
+              "any controls with no Linux event are not bindable)")
     print("  Press each key as prompted. Commands (type + Enter):  "
           "s=skip  b=back  q=finish device\n")
 
@@ -271,7 +271,7 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
         for d in nodes:
             d.close()
 
-    # prune stale entries (e.g. previously-captured diagonals/tilt now skipped)
+    # prune stale entries (e.g. previously-captured diagonals now skipped)
     captured = {k: v for k, v in captured.items() if k in {h["id"] for h in hotspots}}
     return {"device_name": name, "all_names": sorted({d.name for d in nodes}),
             "usb": usb, "captured": captured}

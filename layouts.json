@@ -68,8 +68,8 @@
           {"id": "NAGA_L",     "x": 85,  "y": 89,  "w": 92, "h": 152},
           {"id": "NAGA_R",     "x": 363, "y": 95,  "w": 92, "h": 152},
           {"id": "NAGA_WHL",   "x": 255, "y": 176, "w": 36, "h": 74},
-          {"id": "NAGA_WHL_L", "x": 198, "y": 193, "w": 30, "h": 50, "unavailable": "Wheel tilt is Synapse/onboard-only — Linux receives no event for it"},
-          {"id": "NAGA_WHL_R", "x": 319, "y": 194, "w": 30, "h": 50, "unavailable": "Wheel tilt is Synapse/onboard-only — Linux receives no event for it"},
+          {"id": "NAGA_WHL_L", "x": 198, "y": 193, "w": 30, "h": 50},
+          {"id": "NAGA_WHL_R", "x": 319, "y": 194, "w": 30, "h": 50},
           {"id": "NAGA_DPI1",  "x": 241, "y": 353, "w": 64, "h": 50},
           {"id": "NAGA_DPI2",  "x": 240, "y": 426, "w": 64, "h": 50}
         ]

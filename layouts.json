@@ -31,7 +31,7 @@
           {"id": "TAR_18", "x": 277, "y": 386, "w": 66, "h": 60},
           {"id": "TAR_19", "x": 366, "y": 378, "w": 66, "h": 60},
           {"id": "TAR_20", "x": 606, "y": 691, "w": 98, "h": 60},
-          {"id": "TAR_WHEEL", "x": 476, "y": 414, "w": 48, "h": 78},
+          {"id": "TAR_WHEEL", "x": 476, "y": 414, "w": 48, "h": 78, "emits": "BTN_MIDDLE"},
           {"id": "TAR_THUMB", "x": 598, "y": 479, "w": 66, "h": 60}
         ]
       },
@@ -65,9 +65,9 @@
         "image": "prototype/assets/naga-top.png",
         "size": [600, 958],
         "keys": [
-          {"id": "NAGA_L",     "x": 85,  "y": 89,  "w": 92, "h": 152},
-          {"id": "NAGA_R",     "x": 363, "y": 95,  "w": 92, "h": 152},
-          {"id": "NAGA_WHL",   "x": 255, "y": 176, "w": 36, "h": 74},
+          {"id": "NAGA_L",     "x": 85,  "y": 89,  "w": 92, "h": 152, "emits": "BTN_LEFT"},
+          {"id": "NAGA_R",     "x": 363, "y": 95,  "w": 92, "h": 152, "emits": "BTN_RIGHT"},
+          {"id": "NAGA_WHL",   "x": 255, "y": 176, "w": 36, "h": 74, "emits": "BTN_MIDDLE"},
           {"id": "NAGA_WHL_L", "x": 198, "y": 193, "w": 30, "h": 50},
           {"id": "NAGA_WHL_R", "x": 319, "y": 194, "w": 30, "h": 50},
           {"id": "NAGA_DPI1",  "x": 241, "y": 353, "w": 64, "h": 50},

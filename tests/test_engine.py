@@ -716,5 +716,65 @@ class DaemonCacheRefreshTests(unittest.TestCase):
         self.assertEqual(engine._vocab.cache_info().currsize, 1)
 
 
+class PointerHijackGuardTests(unittest.TestCase):
+    """The guard that stops a stray mouse-button capture from remapping the user's
+    real left/right/middle click (the 'left-click became F1' footgun)."""
+
+    OWNERS = {0x110: frozenset({"NAGA_L"}),
+              0x111: frozenset({"NAGA_R"}),
+              0x112: frozenset({"NAGA_WHL", "TAR_WHEEL"})}
+
+    def test_non_owner_capturing_a_pointer_button_is_flagged(self):
+        reason = engine.pointer_hijack_reason("NAGA_WHL_L", 1, 0x110, self.OWNERS)
+        self.assertIsNotNone(reason)
+        self.assertIn("NAGA_WHL_L", reason)
+
+    def test_owner_binding_its_own_button_is_allowed(self):
+        self.assertIsNone(engine.pointer_hijack_reason("NAGA_L", 1, 0x110, self.OWNERS))
+
+    def test_middle_button_has_multiple_valid_owners(self):
+        # Both the Naga wheel and the Tartarus wheel legitimately emit BTN_MIDDLE.
+        self.assertIsNone(engine.pointer_hijack_reason("NAGA_WHL", 1, 0x112, self.OWNERS))
+        self.assertIsNone(engine.pointer_hijack_reason("TAR_WHEEL", 1, 0x112, self.OWNERS))
+        self.assertIsNotNone(engine.pointer_hijack_reason("NAGA_05", 1, 0x112, self.OWNERS))
+
+    def test_non_pointer_key_is_never_flagged(self):
+        self.assertIsNone(engine.pointer_hijack_reason("NAGA_05", 1, 30, self.OWNERS))  # KEY_A
+
+    def test_relative_event_is_never_flagged(self):
+        self.assertIsNone(engine.pointer_hijack_reason("NAGA_05", 2, 0x110, self.OWNERS))
+
+    def test_unowned_button_is_not_flagged(self):
+        # If no layout declares an owner, we can't know it's a mis-capture.
+        self.assertIsNone(engine.pointer_hijack_reason("X", 1, 0x110, {}))
+
+    def test_real_layout_declares_the_pointer_owners(self):
+        owners = engine.pointer_button_owners()
+        self.assertIn("NAGA_L", owners.get(0x110, frozenset()))
+        self.assertIn("NAGA_R", owners.get(0x111, frozenset()))
+        self.assertIn("NAGA_WHL", owners.get(0x112, frozenset()))
+        self.assertIn("TAR_WHEEL", owners.get(0x112, frozenset()))
+
+
+class PointerHijackInBuildPresetTests(unittest.TestCase):
+    """build_preset must refuse a mapping that would hijack a primary pointer
+    button — using the real layouts.json ownership."""
+
+    def test_miscaptured_left_click_is_refused(self):
+        # NAGA_WHL_L holding BTN_LEFT (the exact bug) must NOT map left-click away.
+        caps = {"NAGA_WHL_L": {"type": 1, "code": 0x110, "origin_hash": "x"}}
+        mappings, warnings = engine.build_preset({"NAGA_WHL_L": "F1"}, caps)
+        self.assertEqual(mappings, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("NAGA_WHL_L", warnings[0])
+
+    def test_owner_may_bind_its_own_left_click(self):
+        caps = {"NAGA_L": {"type": 1, "code": 0x110, "origin_hash": "x"}}
+        mappings, warnings = engine.build_preset({"NAGA_L": "LMB"}, caps)
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(mappings), 1)
+        self.assertEqual(mappings[0]["output_symbol"], "BTN_LEFT")
+
+
 if __name__ == "__main__":
     unittest.main()

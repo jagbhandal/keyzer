@@ -43,6 +43,8 @@ except ImportError:
         "  or:             pip install --user evdev"
     )
 
+import engine   # pure-stdlib sibling; supplies the pointer-button hijack guard
+
 REPO = Path(__file__).resolve().parent.parent
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "keyzer"
 CAPTURES = CONFIG_DIR / "captures.json"
@@ -256,6 +258,13 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
                     break
                 else:
                     print("      ? commands: s=skip  b=back  q=finish")
+                continue
+            hijack = engine.pointer_hijack_reason(kid, payload["type"], payload["code"])
+            if hijack:
+                # A stray real mouse-button press, not this control — recording it
+                # would later remap the user's actual click. Stay on this hotspot.
+                print(f"      ✗ {hijack}")
+                drain(nodes)
                 continue
             captured[kid] = capture_entry(payload)
             print(f"      got {payload['name']}  (type={payload['type']} "

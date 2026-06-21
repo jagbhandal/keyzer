@@ -173,6 +173,15 @@ class _CaptureWorker(QThread):
                     break
                 if payload is None or not self._claim(hotspot):
                     continue   # timed out, or re-armed elsewhere meanwhile — discard
+                hijack = engine.pointer_hijack_reason(
+                    hotspot, payload.get("type"), payload.get("code"))
+                if hijack:
+                    # A real mouse-button press, not this control — recording it would
+                    # remap the user's actual click. Re-arm so they can retry; the
+                    # message is surfaced non-fatally via calibrationError.
+                    self.arm(hotspot)
+                    self.failed.emit(hijack)
+                    continue
                 try:
                     engine.record_capture(self._dev_id, self._device_name, hotspot,
                                           capture.capture_entry(payload),

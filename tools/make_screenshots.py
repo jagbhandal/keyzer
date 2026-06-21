@@ -38,8 +38,9 @@ SHOTS = [
     ("naga.png",       {"KEYZER_DEV": "naga", "KEYZER_VIEW": "side"}),
     ("lighting.png",   {"KEYZER_DEV": "naga", "KEYZER_LIGHTPANEL": "1"}),
     ("thumb.png",      {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "thumb"}),
+    ("thumb-4way.png", {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "thumb", "KEYZER_THUMBMODE": "4way"}),
 ]
-GIF_FRAMES = ["keyzer.png", "calibrate.png", "compare.png", "lighting.png"]
+GIF_FRAMES = ["keyzer.png", "calibrate.png", "thumb-4way.png", "compare.png", "lighting.png"]
 
 
 def render(name: str, extra: dict) -> bool:

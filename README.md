@@ -17,7 +17,7 @@
 > Razer Synapse doesn't run on Linux, and [input-remapper](https://github.com/sezanzeb/input-remapper)'s stock editor makes you map raw event codes by hand. **KEYZER gives you the workflow you actually want: see your real device, click a key, pick a binding — and it's live instantly, no Apply step.** Free, open source, no account, no telemetry.
 
 <p align="center">
-  <img src="docs/screenshots/tour.gif" alt="KEYZER in action — keypad, in-app calibration, profile compare, Chroma lighting" width="760">
+  <img src="docs/screenshots/tour.gif" alt="KEYZER in action — keypad, calibration, 4-way thumb mode, profile compare, Chroma lighting" width="760">
 </p>
 
 <table>
@@ -28,6 +28,10 @@
   <tr>
     <td width="50%"><img src="docs/screenshots/naga.png" alt="Naga Pro side view"><br><sub><b>Naga Pro</b> — the 12-button thumb grid, face-on</sub></td>
     <td width="50%"><img src="docs/screenshots/lighting.png" alt="Per-zone Chroma lighting"><br><sub><b>Lighting</b> — per-zone Chroma effects + a full colour wheel</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/thumb-4way.png" alt="Tartarus thumb pad in 4-way movement mode"><br><sub><b>4-way thumb (movement)</b> — diagonals auto-blend from the cardinals: buttery WASD strafing, zero stutter</sub></td>
+    <td width="50%"><img src="docs/screenshots/thumb.png" alt="Tartarus thumb pad in 8-way mode"><br><sub><b>8-way thumb (discrete)</b> — bind all eight directions independently for abilities</sub></td>
   </tr>
 </table>
 
@@ -59,6 +63,7 @@ Synapse is more capable:
 | **RGB / Chroma lighting** | ⚠️ Per-zone colour, brightness & effects (needs OpenRazer) | ✅ Full Chroma Studio (per-key, animations, app sync) |
 | **DPI / sensitivity stages** | ❌ No (a hardware function) | ✅ Yes |
 | **Hypershift / second layer** | ✅ Yes — hold a key for a whole second layer | ✅ Yes |
+| **8-way thumb-pad modes (4-way / 8-way)** | ✅ Yes — per device, per profile | ✅ Yes |
 | **Visual calibration** | ✅ In-app (click a key, press it) | ✅ N/A (knows its own devices) |
 | **Profile compare / diff** | ✅ Yes — see what changed between profiles | ❌ No |
 | **On-board memory (profile saved on the device)** | ❌ No — applies live through the OS, so it works system-wide | ✅ Yes — travels with the device |
@@ -166,6 +171,8 @@ You don't need to know anything about input-remapper. The flow:
 
 > **Held, not tapped:** anything joined with `+` is *held down together* for as long as you hold the trigger key, then released — perfect for movement (`W+A`) and modifiers (`Shift`). The same syntax covers shortcuts like `Ctrl+C` — just tap the key and the combo fires once.
 
+**Tartarus thumb pad — 4-way vs 8-way.** The Tartarus Pro's directional thumb pad has a mode toggle in the thumb view. **4-way** binds the four cardinals and lets diagonals happen *automatically* by holding two neighbours at once — so WASD movement stays buttery smooth, with no stutter when you roll between a strafe and straight. It's the one to use for games. **8-way** instead lets you bind all eight directions independently — ideal for mapping eight distinct abilities, at the cost of blended movement. The choice is saved per device, per profile.
+
 Profiles (e.g. **Gaming** vs **Work**) live in the header menu — switching one applies it live instantly (there's no separate Apply step). **Compare** shows what differs between two profiles at a glance, and **Hypershift** gives each device a hold-key second layer: hold one key and every other key does something else. Export/import to share a setup. Timed/recorded macro sequences aren't in the UI yet; for those you can edit the input-remapper preset directly.
 
 ## How it works
@@ -194,6 +201,7 @@ KEYZER talks to input-remapper only through its CLI / preset files / DBus — ne
 - [x] Bindings persist across reboot & device reconnect (input-remapper autoload), applied automatically — no Apply button
 - [x] OpenRazer lighting control (per-zone Chroma effects + brightness)
 - [x] Hypershift second layer (hold-key combinations)
+- [x] Per-device 4-way/8-way thumb-pad mode (smooth movement vs eight discrete binds)
 - [x] Profile compare/diff + honest apply-health readout
 - [x] Demo mode (`--demo`) — try KEYZER with no hardware
 - [ ] App-aware profile switching (GNOME/Wayland active-window)

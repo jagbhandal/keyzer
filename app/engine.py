@@ -221,14 +221,28 @@ def pointer_button_owners(path: Path = _LAYOUTS) -> dict:
     emit BTN_MIDDLE)."""
     name_to_code = {name: code for code, name in _POINTER_BUTTON_CODES.items()}
     owners: dict[int, set] = {}
-    for dev in (load_json(path, {}) or {}).values():
-        if not isinstance(dev, dict):
+    # A hand-/community-edited layouts.json may be any shape — degrade to "no
+    # owners" (the guard then fails open, never crashing capture or apply) rather
+    # than trusting the structure. Each level is shape-checked before use.
+    layouts = load_json(path, {})
+    if not isinstance(layouts, dict):
+        return {}
+    for dev in layouts.values():
+        views = dev.get("views") if isinstance(dev, dict) else None
+        if not isinstance(views, dict):
             continue
-        for view in (dev.get("views") or {}).values():
-            for key in view.get("keys", []):
-                code = name_to_code.get(key.get("emits"))
-                if code is not None and key.get("id"):
-                    owners.setdefault(code, set()).add(key["id"])
+        for view in views.values():
+            keys = view.get("keys") if isinstance(view, dict) else None
+            if not isinstance(keys, list):
+                continue
+            for key in keys:
+                if not isinstance(key, dict):
+                    continue
+                emits, hid = key.get("emits"), key.get("id")
+                if isinstance(emits, str) and hid:   # emits must be hashable for the lookup
+                    code = name_to_code.get(emits)
+                    if code is not None:
+                        owners.setdefault(code, set()).add(hid)
     return {code: frozenset(ids) for code, ids in owners.items()}
 
 

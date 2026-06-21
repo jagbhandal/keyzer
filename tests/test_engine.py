@@ -755,6 +755,32 @@ class PointerHijackGuardTests(unittest.TestCase):
         self.assertIn("NAGA_WHL", owners.get(0x112, frozenset()))
         self.assertIn("TAR_WHEEL", owners.get(0x112, frozenset()))
 
+    def test_malformed_layout_degrades_to_empty_without_crashing(self):
+        # A hand-/community-edited layouts.json of any shape must NOT crash the
+        # guard (which would crash CLI calibration or hang GUI apply); it returns
+        # {} and the guard fails open.
+        import os
+        import tempfile
+        from pathlib import Path
+        bad = [
+            "[]",                                                   # top-level not a dict
+            '{"d": "notadict"}',                                    # device not a dict
+            '{"d": {"views": []}}',                                 # views not a dict
+            '{"d": {"views": {"v": "x"}}}',                         # view not a dict
+            '{"d": {"views": {"v": {"keys": "x"}}}}',               # keys not a list
+            '{"d": {"views": {"v": {"keys": ["x"]}}}}',             # key not a dict
+            '{"d": {"views": {"v": {"keys": [{"id": "K", "emits": ["BTN_LEFT"]}]}}}}',  # emits unhashable
+            "{ not json",                                           # corrupt JSON
+        ]
+        for i, text in enumerate(bad):
+            with tempfile.NamedTemporaryFile("w", suffix=f"_{i}.json", delete=False) as f:
+                f.write(text)
+                p = f.name
+            try:
+                self.assertEqual(engine.pointer_button_owners(Path(p)), {})
+            finally:
+                os.unlink(p)
+
 
 class PointerHijackInBuildPresetTests(unittest.TestCase):
     """build_preset must refuse a mapping that would hijack a primary pointer

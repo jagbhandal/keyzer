@@ -43,6 +43,8 @@ except ImportError:
         "  or:             pip install --user evdev"
     )
 
+import engine   # pure-stdlib sibling; supplies the pointer-button hijack guard
+
 REPO = Path(__file__).resolve().parent.parent
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "keyzer"
 CAPTURES = CONFIG_DIR / "captures.json"
@@ -214,8 +216,8 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
     print(f"\n=== {dev_layout.get('name', dev_id)} — {len(hotspots)} keys "
           f"(device '{name}', {len(nodes)} nodes) ===")
     if nskip:
-        print(f"  ({nskip} keys skipped: 8-way diagonals are derived, and some controls "
-              "emit no Linux event — e.g. the wheel tilt)")
+        print(f"  ({nskip} keys skipped: 8-way diagonals are derived from their cardinals; "
+              "any controls with no Linux event are not bindable)")
     print("  Press each key as prompted. Commands (type + Enter):  "
           "s=skip  b=back  q=finish device\n")
 
@@ -257,6 +259,13 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
                 else:
                     print("      ? commands: s=skip  b=back  q=finish")
                 continue
+            hijack = engine.pointer_hijack_reason(kid, payload["type"], payload["code"])
+            if hijack:
+                # A stray real mouse-button press, not this control — recording it
+                # would later remap the user's actual click. Stay on this hotspot.
+                print(f"      ✗ {hijack}")
+                drain(nodes)
+                continue
             captured[kid] = capture_entry(payload)
             print(f"      got {payload['name']}  (type={payload['type']} "
                   f"code={payload['code']})")
@@ -271,7 +280,7 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
         for d in nodes:
             d.close()
 
-    # prune stale entries (e.g. previously-captured diagonals/tilt now skipped)
+    # prune stale entries (e.g. previously-captured diagonals now skipped)
     captured = {k: v for k, v in captured.items() if k in {h["id"] for h in hotspots}}
     return {"device_name": name, "all_names": sorted({d.name for d in nodes}),
             "usb": usb, "captured": captured}

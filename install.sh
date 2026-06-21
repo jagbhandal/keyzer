@@ -38,6 +38,34 @@ if [[ "${ans:-N}" =~ ^[Yy] ]]; then
   echo "   (log out and back in for the plugdev group to take effect)"
 fi
 
+read -r -p $'\nEnable Naga Pro wheel-tilt key binding (background shim)? [Y/n] ' tilt
+if [[ ! "${tilt:-Y}" =~ ^[Nn] ]]; then
+  say "Installing the wheel-tilt shim (udev access rules + per-user service)"
+  # Grant the logged-in user hidraw read + uinput write (no root daemon).
+  sudo install -m 0644 "$HERE/packaging/99-keyzer-tilt.rules" \
+                       /etc/udev/rules.d/99-keyzer-tilt.rules
+  echo uinput | sudo tee /etc/modules-load.d/keyzer-uinput.conf >/dev/null
+  sudo modprobe uinput || true
+  sudo udevadm control --reload-rules && sudo udevadm trigger
+  # Per-user systemd service running the shim from this checkout.
+  mkdir -p "$HOME/.config/systemd/user"
+  # Substitute the checkout path via argv/env (never interpolated into a shell
+  # or regex), so a path with special characters can't corrupt the unit file.
+  python3 - "$HERE/packaging/keyzer-tilt-shim.service" \
+            "$HOME/.config/systemd/user/keyzer-tilt-shim.service" "$HERE" <<'PY'
+import sys
+src, dst, keyzer_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(src) as f:
+    unit = f.read().replace("@KEYZER_DIR@", keyzer_dir)
+with open(dst, "w") as f:
+    f.write(unit)
+PY
+  systemctl --user daemon-reload || true
+  systemctl --user enable --now keyzer-tilt-shim.service || true
+  echo "   Enabled. Re-plug the Naga once (or log out/in) so the new access applies,"
+  echo "   then calibrate it in KEYZER and bind 'Wheel tilt L/R' like any other key."
+fi
+
 read -r -p $'\nAdd KEYZER to your application menu? [Y/n] ' menu
 if [[ ! "${menu:-Y}" =~ ^[Nn] ]]; then
   say "Installing launcher, icon and desktop entry (per-user, no root)"

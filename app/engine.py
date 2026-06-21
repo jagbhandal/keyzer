@@ -202,6 +202,66 @@ def _is_pointer(cap: dict) -> bool:
     return int(cap.get("type", 0)) == 2 and int(cap.get("code", -1)) in (0, 1, 2)
 
 
+# Primary pointer buttons by evdev code. Remapping one of these AWAY for a hotspot
+# that isn't that physical button silently hijacks the user's real click — a stray
+# click captured during calibration would otherwise become e.g. "left-click -> F1"
+# and brick the mouse. KEYZER refuses such mappings; only the button's own hotspot
+# may bind it. The owner is whatever hotspot the layout marks with that "emits".
+_POINTER_BUTTON_CODES = {0x110: "BTN_LEFT", 0x111: "BTN_RIGHT", 0x112: "BTN_MIDDLE"}
+_LAYOUTS = Path(__file__).resolve().parent.parent / "layouts.json"
+
+
+@lru_cache(maxsize=1)
+def pointer_button_owners(path: Path = _LAYOUTS) -> dict:
+    """``{evdev code: frozenset(hotspot ids)}`` — the hotspots that legitimately
+    emit each primary pointer button, read from each layout hotspot's optional
+    ``emits`` field. KEYZER's single source of truth for which control actually IS
+    the left/right/middle mouse button. Keyed by code with a *set* of ids because
+    more than one device can own the same button (Naga wheel + Tartarus wheel both
+    emit BTN_MIDDLE)."""
+    name_to_code = {name: code for code, name in _POINTER_BUTTON_CODES.items()}
+    owners: dict[int, set] = {}
+    # A hand-/community-edited layouts.json may be any shape — degrade to "no
+    # owners" (the guard then fails open, never crashing capture or apply) rather
+    # than trusting the structure. Each level is shape-checked before use.
+    layouts = load_json(path, {})
+    if not isinstance(layouts, dict):
+        return {}
+    for dev in layouts.values():
+        views = dev.get("views") if isinstance(dev, dict) else None
+        if not isinstance(views, dict):
+            continue
+        for view in views.values():
+            keys = view.get("keys") if isinstance(view, dict) else None
+            if not isinstance(keys, list):
+                continue
+            for key in keys:
+                if not isinstance(key, dict):
+                    continue
+                emits, hid = key.get("emits"), key.get("id")
+                if isinstance(emits, str) and hid:   # emits must be hashable for the lookup
+                    code = name_to_code.get(emits)
+                    if code is not None:
+                        owners.setdefault(code, set()).add(hid)
+    return {code: frozenset(ids) for code, ids in owners.items()}
+
+
+def pointer_hijack_reason(hotspot: str, etype: int, code: int,
+                          owners: dict | None = None) -> str | None:
+    """A reason string if binding ``hotspot`` to a capture of ``(etype, code)``
+    would remap a primary pointer button owned by a *different* hotspot — i.e.
+    hijack the user's real click — else None. Pure when ``owners`` is supplied."""
+    if etype != 1 or code not in _POINTER_BUTTON_CODES:   # EV_KEY presses only
+        return None
+    owners = pointer_button_owners() if owners is None else owners
+    valid = owners.get(code)
+    if valid and hotspot not in valid:
+        return (f"{hotspot} captured {_POINTER_BUTTON_CODES[code]} — that's a "
+                "physical mouse button, not this control. Re-capture "
+                f"{hotspot} using the key it actually represents.")
+    return None
+
+
 def _input_config(cap: dict) -> dict:
     inp = {"type": int(cap["type"]), "code": int(cap["code"])}
     if cap.get("origin_hash"):
@@ -247,6 +307,9 @@ def build_preset(binds: dict, captures: dict, combos: dict | None = None,
             try:
                 if _is_pointer(cap):
                     return None, f"{hotspot}: {m} captured pointer movement — re-capture it"
+                hijack = pointer_hijack_reason(m, int(cap["type"]), int(cap["code"]))
+                if hijack:
+                    return None, f"{hotspot}: {hijack}"
                 inputs.append(_input_config(cap))
             except (KeyError, TypeError, ValueError):
                 # a hand-edited / partially-written captures.json row -> skip with a

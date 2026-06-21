@@ -312,8 +312,9 @@ class CaptureAndGeometryTests(_IsolatedBackendTest):
         self.assertEqual(len(self.b._hotspot_ids["tartarus"]), 30)
 
     def test_unavailable_filtering(self):
-        # Naga wheel-tilt hotspots are flagged unavailable in layouts.json.
-        self.assertEqual(self.b._unavailable["naga"], {"NAGA_WHL_L", "NAGA_WHL_R"})
+        # No hotspots are flagged unavailable: the Naga wheel-tilt hotspots are
+        # now bindable via the tilt shim (tilt_shim.py), so nothing is filtered.
+        self.assertEqual(self.b._unavailable["naga"], set())
         self.assertEqual(self.b._unavailable["tartarus"], set())
 
     def test_combos_collected(self):

@@ -51,7 +51,10 @@ BAD = ("error", "qml:", "unexpected token", "typeerror", "referenceerror",
        "cannot read", "is not a function", "is not defined", "traceback")
 # input-remapper logs benign `xmodmap` warnings that contain BAD substrings on a
 # headless box; they aren't real errors. Allow-list further known noise here.
-IGNORE = ("xmodmap",)
+# "unsupported image format": the optional Qt SVG image codec isn't packaged in a
+# minimal CI container, so the app logo won't paint there — not a QML error, and a
+# no-op on a dev box where the codec is present (it renders fine).
+IGNORE = ("xmodmap", "unsupported image format")
 
 
 def check(extra: dict) -> tuple[bool, list[str]]:

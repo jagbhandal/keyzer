@@ -4,11 +4,11 @@ name: check
 # pull_request fires when a PR is opened/updated (pre-merge feedback); push to main
 # covers post-merge verification.
 #
-# This job runs compile + the unit suite. The 24-state offscreen render gate is
-# SKIPPED here (KEYZER_SKIP_RENDER=1): it needs an apt-built PySide6 — the pip
-# wheels return a null QML context property in slim containers (proven via minimal
-# repro). A follow-up adds a second job on an Ubuntu 26.04 + apt-PySide6 image
-# (matching the dev box) that runs the render gate too.
+# Two jobs: `tests` (fast — slim + pip-Qt: compile + unit suite, render skipped) and
+# `render` (Ubuntu 26.04 + apt-Qt: the 24-state offscreen render gate). The render
+# gate needs apt-built PySide6 + the qml6 runtime modules — pip wheels return a null
+# QML context property in slim containers (proven via minimal repro), so it can't run
+# in the `tests` job. apt-Qt also matches the dev box.
 on:
   pull_request:
     branches:
@@ -71,3 +71,52 @@ jobs:
         env:
           KEYZER_SKIP_RENDER: "1"
         run: bash tools/check.sh
+
+  render:
+    runs-on: self-hosted
+    # Ubuntu + apt-Qt (NOT pip-wheel Qt): the full app's setContextProperty returns
+    # null in QML under pip-wheel Qt in slim containers. apt-Qt matches the dev box.
+    container:
+      image: ubuntu:26.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Manual checkout (git clone — runner lacks Node for actions/checkout)
+        env:
+          PR_TOKEN: ${{ secrets.PR_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_SAFE: ${{ github.sha }}
+          PUBLIC_GITEA_URL: "https://git.jagbhandal.com"
+        run: |
+          # Keep `set -e` and NOT `set -x`: tracing would echo the
+          # http.extraHeader Authorization token into the CI logs.
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates
+          CLONE_URL="${PUBLIC_GITEA_URL%/}/${REPOSITORY}.git"
+          cd "$GITHUB_WORKSPACE"
+          git init -q
+          git remote add origin "$CLONE_URL"
+          git -c "http.extraHeader=Authorization: token ${PR_TOKEN}" \
+              fetch --depth 1 origin "$GITHUB_REF_SAFE"
+          git checkout -q FETCH_HEAD
+
+      - name: Install apt-Qt — PySide6 bindings + qml6 runtime modules
+        run: |
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          # python3-pyside6.* = the Python bindings; qml6-module-* = the QML runtime
+          # modules the bindings don't bundle (QtQuick.Controls etc.). The Qt SVG
+          # image codec isn't packaged on 26.04, so the app logo won't paint here —
+          # render_check.py allow-lists that ("unsupported image format"); not a QML error.
+          apt-get install -y -qq --no-install-recommends python3 \
+            python3-pyside6.qtquick python3-pyside6.qtquickcontrols2 \
+            python3-pyside6.qtsvg python3-pyside6.qtdbus \
+            qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-templates \
+            qml6-module-qtquick-window qml6-module-qtquick-layouts qml6-module-qtqml-workerscript \
+            fonts-dejavu-core
+
+      - name: Render gate (24 offscreen UI states)
+        run: python3 tools/render_check.py

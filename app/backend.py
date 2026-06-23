@@ -58,17 +58,17 @@ class _LightingWorker(threading.Thread):
         self._run_cmd = run_cmd                  # execute one queued command
         self._interval = interval_ms / 1000.0
         self._q: "queue.Queue" = queue.Queue()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
 
     def submit(self, cmd) -> None:
         self._q.put(cmd)
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
         self._q.put(None)   # unblock a waiting get()
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             try:
                 cmd = self._q.get(timeout=self._interval)
             except queue.Empty:
@@ -93,17 +93,17 @@ class _QueueWorker(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
         self._q: "queue.Queue" = queue.Queue()
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
 
     def submit(self, fn) -> None:
         self._q.put(fn)
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stop_event.set()
         self._q.put(None)   # unblock a waiting get()
 
     def run(self) -> None:
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             fn = self._q.get()
             if fn is None:
                 continue

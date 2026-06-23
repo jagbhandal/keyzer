@@ -1,0 +1,73 @@
+name: check
+
+# Runs KEYZER's gate (tools/check.sh) on every PR to main and every push to main.
+# pull_request fires when a PR is opened/updated (pre-merge feedback); push to main
+# covers post-merge verification.
+#
+# This job runs compile + the unit suite. The 24-state offscreen render gate is
+# SKIPPED here (KEYZER_SKIP_RENDER=1): it needs an apt-built PySide6 — the pip
+# wheels return a null QML context property in slim containers (proven via minimal
+# repro). A follow-up adds a second job on an Ubuntu 26.04 + apt-PySide6 image
+# (matching the dev box) that runs the render gate too.
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  tests:
+    runs-on: self-hosted
+    # The act_runner host has neither Node nor a Python toolchain (per
+    # homelab-infra's run-tests.yml), so we pull a Python image for the job and
+    # clone manually (actions/checkout is a JS action that needs Node in-container).
+    container:
+      image: python:3.11-slim
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Manual checkout (git clone — runner lacks Node for actions/checkout)
+        env:
+          PR_TOKEN: ${{ secrets.PR_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_SAFE: ${{ github.sha }}
+          # github.server_url resolves to an internal non-TLS port on this runner;
+          # hardcode the public reverse-proxied URL (same fix as homelab-infra CI).
+          PUBLIC_GITEA_URL: "https://git.jagbhandal.com"
+        run: |
+          # Keep `set -e` and NOT `set -x`: tracing would echo the
+          # http.extraHeader Authorization token into the CI logs.
+          set -e
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends git ca-certificates
+          CLONE_URL="${PUBLIC_GITEA_URL%/}/${REPOSITORY}.git"
+          cd "$GITHUB_WORKSPACE"
+          git init -q
+          git remote add origin "$CLONE_URL"
+          # token via http.extraHeader so it never lands in an echoed remote URL.
+          git -c "http.extraHeader=Authorization: token ${PR_TOKEN}" \
+              fetch --depth 1 origin "$GITHUB_REF_SAFE"
+          git checkout -q FETCH_HEAD
+
+      - name: Install Qt headless runtime + PySide6
+        run: |
+          set -e
+          # Qt needs these even under the offscreen platform; libgssapi-krb5-2 is
+          # the one that breaks the QtQuick import if missing.
+          apt-get install -y -qq --no-install-recommends \
+            libgl1 libegl1 libopengl0 libxkbcommon0 libdbus-1-3 \
+            libgssapi-krb5-2 libkrb5-3 fontconfig fonts-dejavu-core \
+            libfreetype6 libglib2.0-0
+          # Pinned exact (verified green on 6.11.1; bump deliberately). pip-wheel Qt
+          # can differ from the dev box's apt-Qt on rare QML edge cases, so this is a
+          # consistent second gate alongside the local one. evdev/openrazer absent →
+          # their hardware-coupled tests skip via the guards in tests/.
+          pip install --no-cache-dir "PySide6==6.11.1"
+
+      - name: Gate — compile + unit tests (render gate runs in the apt-Qt job)
+        env:
+          KEYZER_SKIP_RENDER: "1"
+        run: bash tools/check.sh

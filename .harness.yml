@@ -1,0 +1,25 @@
+# .harness.yml — harness conformance manifest for keyzer.
+#
+# Onboards keyzer into the Jag-Net harness portfolio. Levels are assessed against
+# CURRENT main (honest-numbers: on-disk reality only, runtime/branch claims excluded).
+# Levels & criteria: homelab-infra/docs/harness/MATURITY-RUBRIC.md
+# Target bars (gui-app): ctx L2 · leg L2 · enf L2 · ver L2 · gc L1 · aut L2.
+
+archetype: gui-app            # interactive-agent | autonomous-agent | web-app | gui-app | library | infra
+
+levels:                       # L0 | L1 | L2 | L3 | n/a
+  context:      L2            # = target: ARCHITECTURE.md + README + docs/*-linux.md + UAT.md = structured map; no monolith CLAUDE.md anti-pattern. (L3 needs a mechanical doc-freshness linter — absent.)
+  legibility:   L2            # = target: tools/render_check.py boots the full Qt app OFFSCREEN across 24 UI states, fails on any QML error — one observable signal class. (L3 needs queryable logs+metrics+traces.)
+  enforcers:    L2            # = target: .gitea/workflows/check.yml runs a py_compile gate that BLOCKS on every PR/push. (L3 needs a custom remediation-injecting linter; no ruff/mypy either.)
+  verification: L2            # = target: CI TRIGGERS tools/check.sh (compile + unit suite) + a 24-state render job on EVERY PR — blocking trigger, not just an asset. (L3 needs an agent-to-agent review loop.)
+  gc:           L1            # = target (gui-app gc bar is lenient): cleanup is manual; no QUALITY_SCORE/golden-principles doc. Known weakness, but conformant.
+  autonomy:     L1            # GAP, target L2 — JUDGMENT CALL for review: no IN-REPO action policy or approval gate. The merge gate is the external git-guard, which does NOT travel with the repo, so by "what the agent can't see doesn't exist" this is L1. (If the runtime guard is credited, it's L2 — Jag's call. To reach L2 in-repo: a CONTRIBUTING/branch-protection policy.)
+
+evidence:                     # paths verified to resolve on main
+  context:      [ARCHITECTURE.md, README.md, docs/]
+  legibility:   [tools/render_check.py]
+  enforcers:    [.gitea/workflows/check.yml, tools/check.sh]
+  verification: [.gitea/workflows/check.yml, tools/check.sh, tests/]
+  # autonomy: (none in-repo — see the L1 gap note above)
+
+last_audited: 2026-06-23      # YYYY-MM-DD of the last real assessment

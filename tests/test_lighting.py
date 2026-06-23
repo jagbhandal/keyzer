@@ -11,7 +11,13 @@ import unittest
 import conftest  # noqa: F401  -- sys.path + offscreen + warning filter
 
 import lighting
-from openrazer.client import constants as c
+
+try:
+    from openrazer.client import constants as c
+    _HAVE_OPENRAZER = True
+except ImportError:  # openrazer is an optional, hardware-coupled dep (absent in CI)
+    c = None
+    _HAVE_OPENRAZER = False
 
 
 class _FakeFx:
@@ -61,6 +67,7 @@ _ALL = ("static", "spectrum", "breath_single", "breath_dual",
         "breath_random", "reactive", "wave", "none")
 
 
+@unittest.skipUnless(_HAVE_OPENRAZER, "lighting effect paths need the openrazer library")
 class _LightingTest(unittest.TestCase):
     def setUp(self):
         self._saved = {n: getattr(lighting, n) for n in ("_manager", "available")}

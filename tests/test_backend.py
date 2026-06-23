@@ -352,7 +352,9 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
         # Each captured device produces no mappings, so apply reverts it (stop +
         # clear_autoload); stub those engine externals so no daemon/real config is hit.
         saved = (engine.service_ready, engine.sync_keyboard_layout,
-                 engine.device_keys, engine.stop, engine.clear_autoload)
+                 engine.device_keys, engine.stop, engine.clear_autoload,
+                 engine.available)
+        engine.available = lambda: True   # input-remapper present (CI runner has none)
         engine.service_ready = lambda: True
         engine.sync_keyboard_layout = lambda: {"ok": True, "count": 1,
                                                "path": "/tmp/xmodmap.json", "error": None}
@@ -363,7 +365,8 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
             r = self.b._apply_sync("Default", "")
         finally:
             (engine.service_ready, engine.sync_keyboard_layout,
-             engine.device_keys, engine.stop, engine.clear_autoload) = saved
+             engine.device_keys, engine.stop, engine.clear_autoload,
+             engine.available) = saved
         self.assertFalse(r["ok"])
         self.assertEqual({d["dev"] for d in r["devices"]}, {"tartarus", "naga"})
         for d in r["devices"]:

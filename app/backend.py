@@ -290,7 +290,7 @@ class Backend(QObject):
         self._combos = {dev: {k["id"]: k["combo"] for v in lay["views"].values()
                               for k in v["keys"] if k.get("combo")}
                         for dev, lay in self._layouts.items()}
-        # controls with no Linux event (e.g. Naga wheel tilt) — not bindable
+        # controls a layout marks unavailable (e.g. a hardware DPI button) — not bindable
         self._unavailable = {dev: {k["id"] for v in lay["views"].values()
                                    for k in v["keys"] if k.get("unavailable")}
                              for dev, lay in self._layouts.items()}

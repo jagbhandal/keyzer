@@ -32,14 +32,15 @@ is easy to click on the view where it's actually visible.
 
 ## What about DPI stages and wheel tilt?
 
-Honest limitations on Linux:
+Two special cases:
 
 - **DPI / sensitivity** is a hardware function set on the device, not a remap —
   KEYZER marks those buttons accordingly rather than pretending to bind them. (Use
   OpenRazer for DPI if you need it.)
-- **Wheel tilt** (left/right) emits no Linux input event on this device — it's
-  handled in Razer's firmware/Synapse — so KEYZER shows it as unavailable instead
-  of silently doing nothing.
+- **Wheel tilt** (left/right) is bindable like any other control — the tilt produces
+  Linux input events (a horizontal-scroll notch, and/or a key if your device's
+  onboard profile maps tilt to one), so KEYZER captures and binds it directly. No
+  Synapse and no background daemon needed.
 
 ## Lighting
 

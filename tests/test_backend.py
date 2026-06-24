@@ -313,7 +313,8 @@ class CaptureAndGeometryTests(_IsolatedBackendTest):
 
     def test_unavailable_filtering(self):
         # No hotspots are flagged unavailable: the Naga wheel-tilt hotspots are
-        # now bindable via the tilt shim (tilt_shim.py), so nothing is filtered.
+        # bindable from the real device events (horizontal-scroll / onboard keys),
+        # so nothing is filtered.
         self.assertEqual(self.b._unavailable["naga"], set())
         self.assertEqual(self.b._unavailable["tartarus"], set())
 

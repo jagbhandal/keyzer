@@ -9,7 +9,7 @@ nothing's missed.
 ## 1. Run the automated gate first (catches ~everything that isn't hardware)
 
 ```bash
-bash tools/check.sh        # compile + 84 unit tests + render all 16 UI states
+bash tools/check.sh        # compile + 233 unit tests + render all 24 UI states
 ```
 If it's red, stop and fix before touching the app — the bug is already found.
 What it covers, so you don't have to: engine translation (keys, combos, F-keys,
@@ -31,8 +31,8 @@ python3 app/capture.py                               # one-time per machine
 Run KEYZER: `python3 app/main.py`. Work top to bottom; note the **toast/overlay
 text** + the **step** for anything that misbehaves.
 
-- [ ] **Capture** — `capture.py` prompts every key, records them, and skips the
-      8-way diagonals + wheel tilt (they're derived/unavailable). 49→43 mappable.
+- [ ] **Capture** — `capture.py` prompts every key, records them, and skips only the
+      8-way diagonals (derived from their cardinals). Wheel tilt L/R are capturable.
 - [ ] **Bind a key** — select a hotspot → quick-pick or Listen → **Bind**.
       Toast says `… · live`. Press the physical key → it emits the bound output.
       - [ ] a letter (e.g. TAR_08 → `w`)
@@ -48,8 +48,8 @@ text** + the **step** for anything that misbehaves.
       hotspots share an output.
 - [ ] **Lighting** (OpenRazer running) — per-device colour / effect / brightness;
       Naga Logo + Scroll-wheel zones change independently.
-- [ ] **Edge** — wheel-tilt hotspots show dimmed `n/a`; nothing crashes on a
-      profile/device/view switch.
+- [ ] **Edge** — DPI/sensitivity buttons show dimmed `n/a` (hardware function, not a
+      remap); nothing crashes on a profile/device/view switch.
 
 ## 4. Reporting a bug
 

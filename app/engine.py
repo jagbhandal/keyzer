@@ -305,12 +305,16 @@ def build_preset(binds: dict, captures: dict, combos: dict | None = None,
             if not cap:
                 return None, f"{hotspot}: {m} not captured yet — run capture.py"
             try:
-                if _is_pointer(cap):
-                    return None, f"{hotspot}: {m} captured pointer movement — re-capture it"
-                hijack = pointer_hijack_reason(m, int(cap["type"]), int(cap["code"]))
-                if hijack:
-                    return None, f"{hotspot}: {hijack}"
-                inputs.append(_input_config(cap))
+                # a capture is one event (dict) or a chord of them (list, e.g. a
+                # button that emits Ctrl+1); every event joins the input_combination
+                # so input-remapper matches AND consumes the whole chord
+                for ev in (cap if isinstance(cap, list) else [cap]):
+                    if _is_pointer(ev):
+                        return None, f"{hotspot}: {m} captured pointer movement — re-capture it"
+                    hijack = pointer_hijack_reason(m, int(ev["type"]), int(ev["code"]))
+                    if hijack:
+                        return None, f"{hotspot}: {hijack}"
+                    inputs.append(_input_config(ev))
             except (KeyError, TypeError, ValueError):
                 # a hand-edited / partially-written captures.json row -> skip with a
                 # warning instead of crashing the whole apply
@@ -335,18 +339,19 @@ def build_preset(binds: dict, captures: dict, combos: dict | None = None,
     # base single-key mapping. Same primitive as the 8-way thumb diagonals.
     if shift_binds and shift_key:
         hold_cap = captures.get(shift_key)
-        hold_input = None
+        hold_inputs = None
         if not hold_cap:
             warnings.append(f"shift: hold key {shift_key} not captured — run capture.py")
         else:
             try:
-                if _is_pointer(hold_cap):
+                events = hold_cap if isinstance(hold_cap, list) else [hold_cap]
+                if any(_is_pointer(ev) for ev in events):
                     warnings.append(f"shift: hold key {shift_key} captured pointer movement — re-capture it")
                 else:
-                    hold_input = _input_config(hold_cap)
+                    hold_inputs = [_input_config(ev) for ev in events]
             except (KeyError, TypeError, ValueError):
                 warnings.append(f"shift: hold key {shift_key} capture is corrupt — re-capture it")
-        if hold_input is not None:
+        if hold_inputs is not None:
             for hotspot, value in shift_binds.items():
                 if hotspot == shift_key:
                     continue   # the hold key itself can't be a shift target
@@ -359,7 +364,7 @@ def build_preset(binds: dict, captures: dict, combos: dict | None = None,
                 except (Untranslatable, AttributeError, TypeError, ValueError) as exc:
                     warnings.append(f"shift {hotspot} = {value!r}: {exc}")
                     continue
-                mappings.append({"input_combination": [hold_input, *inputs],
+                mappings.append({"input_combination": [*hold_inputs, *inputs],
                                  "target_uinput": target, "output_symbol": symbol})
     return mappings, warnings
 

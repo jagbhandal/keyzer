@@ -153,6 +153,9 @@ class BuildPresetTests(unittest.TestCase):
             "TAR_TPAD_N": {"type": 1, "code": 103, "origin_hash": "c3",
                            "analog_threshold": 1},
             "TAR_TPAD_E": {"type": 1, "code": 106, "origin_hash": "c3"},
+            # a chorded button: hardware emits Ctrl+1 as ONE press -> stored as a list
+            "NAGA_01": [{"type": 1, "code": 29, "origin_hash": "d4"},
+                        {"type": 1, "code": 2, "origin_hash": "d4"}],
         }
 
     def test_single_input_mapping_shape(self):
@@ -169,6 +172,16 @@ class BuildPresetTests(unittest.TestCase):
         self.assertEqual(ic[0]["type"], 1)
         self.assertEqual(ic[0]["code"], 1)
         self.assertEqual(ic[0]["origin_hash"], "a1")
+
+    def test_chord_capture_expands_to_multikey_input(self):
+        # A button captured as a chord (Ctrl+1) must map from the WHOLE chord, so
+        # input-remapper matches and consumes both keys — no leaked bare '1'.
+        mappings, warnings = engine.build_preset({"NAGA_01": "Ctrl+1"}, self.captures)
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(mappings), 1)
+        ic = mappings[0]["input_combination"]
+        self.assertEqual([(e["type"], e["code"]) for e in ic], [(1, 29), (1, 2)])
+        self.assertEqual(mappings[0]["output_symbol"], "Control_L+1")
 
     def test_uncaptured_hotspot_warns_and_skips(self):
         mappings, warnings = engine.build_preset({"TAR_99": "X"}, self.captures)

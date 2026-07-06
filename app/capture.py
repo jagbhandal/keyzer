@@ -31,6 +31,7 @@ import select
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 try:
@@ -93,13 +94,25 @@ def classify_event(ev, dev) -> dict | None:
     return payload
 
 
-def capture_entry(payload: dict) -> dict:
-    """The persisted shape of a captured press (drops the display-only node/name).
-    Shared by the CLI and the in-app calibrator so captures.json entries match."""
+def _entry(payload: dict) -> dict:
+    """The persisted shape of one captured event (drops the display-only node/name)."""
     entry = {k: payload[k] for k in ("type", "code", "origin_hash") if k in payload}
     if "analog_threshold" in payload:
         entry["analog_threshold"] = payload["analog_threshold"]
     return entry
+
+
+def capture_entry(chord):
+    """The persisted shape of a captured press. Shared by the CLI and the in-app
+    calibrator so captures.json entries match. A single key stays a lone dict (so
+    existing captures are byte-identical); a hardware chord — a button that emits
+    several keys at once, e.g. a Naga side button sending Ctrl+1 — becomes the list
+    of them, which engine expands into a multi-key input_combination so the WHOLE
+    chord is matched and consumed (no half of it leaking through to the app)."""
+    if isinstance(chord, dict):          # tolerate a single payload
+        chord = [chord]
+    entries = [_entry(p) for p in chord]
+    return entries[0] if len(entries) == 1 else entries
 
 
 def find_nodes(vendor: int, product: int) -> list["evdev.InputDevice"]:
@@ -137,18 +150,23 @@ def open_nodes(dev_layout: dict) -> tuple[str | None, list]:
     return preset_dir_name(nodes), nodes
 
 
-def read_press(fd_to_dev):
-    """Block until a real press arrives on one of the device nodes, or the user
-    types a command. Returns ("event", payload) or ("cmd", text)."""
-    fds = list(fd_to_dev) + [sys.stdin.fileno()]
+# How long to keep gathering keys pressed together with the first one. A button
+# that emits a chord (Ctrl+1) fires its keys back-to-back — usually in one read()
+# batch, occasionally split across a couple — so a brief window catches the rest
+# without a real key-up. We also stop the instant the first key is released.
+CHORD_WINDOW = 0.04
+
+
+def _gather_chord(fd_to_dev, ready_fds, window: float = CHORD_WINDOW):
+    """Read the presses pending on ``ready_fds`` plus any that follow within
+    ``window`` seconds, collapsing a hardware chord (e.g. a Naga side button that
+    emits Ctrl+1) into one ordered, de-duplicated list of payloads. Returns the
+    chord, or None if nothing on those fds was a deliberate press. The first key
+    release ends the chord early, so an ordinary single press stays snappy."""
+    chord, seen = [], set()
+    deadline = None
     while True:
-        ready, _, _ = select.select(fds, [], [])
-        if sys.stdin.fileno() in ready:
-            line = sys.stdin.readline()
-            if line == "":   # EOF (closed/redirected stdin) — finish, don't busy-loop
-                return "cmd", "q"
-            return "cmd", line.strip().lower()
-        for fd in ready:
+        for fd in ready_fds:
             dev = fd_to_dev.get(fd)
             if dev is None:
                 continue
@@ -157,30 +175,56 @@ def read_press(fd_to_dev):
             except (BlockingIOError, OSError):   # a node unplugged mid-capture must
                 continue                         # not kill the whole session
             for ev in events:
+                if ev.type == ecodes.EV_KEY and ev.value == 0:   # a release: chord done
+                    if chord:
+                        return chord
+                    continue
                 payload = classify_event(ev, dev)
-                if payload is not None:
-                    return "event", payload
+                if payload is None:
+                    continue
+                key = (payload["type"], payload["code"])
+                if key not in seen:                # keep order, drop the autorepeat/dupes
+                    seen.add(key)
+                    chord.append(payload)
+        if not chord:
+            return None
+        if deadline is None:
+            deadline = time.monotonic() + window
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return chord
+        ready_fds, _, _ = select.select(list(fd_to_dev), [], [], remaining)
+        if not ready_fds:
+            return chord
 
 
-def next_press(nodes, timeout: float = 0.2) -> dict | None:
+def read_press(fd_to_dev):
+    """Block until a real press arrives on one of the device nodes, or the user
+    types a command. Returns ("event", chord) — the list of keys the button emits,
+    one entry for an ordinary key — or ("cmd", text)."""
+    fds = list(fd_to_dev) + [sys.stdin.fileno()]
+    while True:
+        ready, _, _ = select.select(fds, [], [])
+        if sys.stdin.fileno() in ready:
+            line = sys.stdin.readline()
+            if line == "":   # EOF (closed/redirected stdin) — finish, don't busy-loop
+                return "cmd", "q"
+            return "cmd", line.strip().lower()
+        chord = _gather_chord(fd_to_dev, [fd for fd in ready if fd in fd_to_dev])
+        if chord is not None:
+            return "event", chord
+
+
+def next_press(nodes, timeout: float = 0.2):
     """Wait up to ``timeout`` seconds for a deliberate press on ``nodes`` and
-    return its payload, else None on timeout — so a caller can poll in a loop and
-    check for cancellation between calls (used by the in-app calibrator)."""
+    return its chord (a list of payloads — a button emitting Ctrl+1 yields both
+    keys; an ordinary key yields one), else None on timeout — so a caller can poll
+    in a loop and check for cancellation between calls (used by the calibrator)."""
     fd_to_dev = {d.fd: d for d in nodes}
     ready, _, _ = select.select(list(fd_to_dev), [], [], timeout)
-    for fd in ready:
-        dev = fd_to_dev.get(fd)
-        if dev is None:
-            continue
-        try:
-            events = list(dev.read())
-        except (BlockingIOError, OSError):
-            continue
-        for ev in events:
-            payload = classify_event(ev, dev)
-            if payload is not None:
-                return payload
-    return None
+    if not ready:
+        return None
+    return _gather_chord(fd_to_dev, list(ready))
 
 
 def drain(nodes) -> None:
@@ -259,16 +303,20 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
                 else:
                     print("      ? commands: s=skip  b=back  q=finish")
                 continue
-            hijack = engine.pointer_hijack_reason(kid, payload["type"], payload["code"])
+            chord = payload   # the event branch: a list of one-or-more key payloads
+            hijack = next((h for e in chord
+                           if (h := engine.pointer_hijack_reason(kid, e["type"], e["code"]))),
+                          None)
             if hijack:
                 # A stray real mouse-button press, not this control — recording it
                 # would later remap the user's actual click. Stay on this hotspot.
                 print(f"      ✗ {hijack}")
                 drain(nodes)
                 continue
-            captured[kid] = capture_entry(payload)
-            print(f"      got {payload['name']}  (type={payload['type']} "
-                  f"code={payload['code']})")
+            captured[kid] = capture_entry(chord)
+            label = "+".join(e["name"] for e in chord)
+            codes = ", ".join(f"{e['type']}/{e['code']}" for e in chord)
+            print(f"      got {label}  ({codes})")
             drain(nodes)
             i += 1
     finally:

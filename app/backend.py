@@ -168,13 +168,16 @@ class _CaptureWorker(QThread):
                 if hotspot is None:
                     self.msleep(40)
                     continue
-                payload = capture.next_press(self._nodes, timeout=0.2)
+                chord = capture.next_press(self._nodes, timeout=0.2)
                 if self._stop:
                     break
-                if payload is None or not self._claim(hotspot):
+                if chord is None or not self._claim(hotspot):
                     continue   # timed out, or re-armed elsewhere meanwhile — discard
-                hijack = engine.pointer_hijack_reason(
-                    hotspot, payload.get("type"), payload.get("code"))
+                # a chord is one-or-more keys the button emits together (e.g. Ctrl+1);
+                # any of them landing on a real pointer button is a hijack
+                hijack = next((h for e in chord
+                               if (h := engine.pointer_hijack_reason(
+                                   hotspot, e.get("type"), e.get("code")))), None)
                 if hijack:
                     # A real mouse-button press, not this control — recording it would
                     # remap the user's actual click. Re-arm so they can retry; the
@@ -184,12 +187,13 @@ class _CaptureWorker(QThread):
                     continue
                 try:
                     engine.record_capture(self._dev_id, self._device_name, hotspot,
-                                          capture.capture_entry(payload),
+                                          capture.capture_entry(chord),
                                           usb=self._usb, all_names=self._all_names)
                 except OSError as exc:
                     self.failed.emit(f"couldn't save capture: {exc}")
                     continue
-                self.captured.emit(self._dev_id, hotspot, payload.get("name", ""))
+                self.captured.emit(self._dev_id, hotspot,
+                                   "+".join(e.get("name", "") for e in chord))
         except Exception as exc:   # a worker crash must never take down the app
             self.failed.emit(str(exc))
         finally:

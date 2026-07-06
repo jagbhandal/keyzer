@@ -83,7 +83,11 @@ class _FakeNode:
         return {1: [30, 31, 32]}
 
     def read(self):
-        return iter(self._events)
+        # one-shot, like a real non-blocking node: events once, then "nothing pending"
+        if not self._events:
+            raise BlockingIOError()
+        evs, self._events = self._events, []
+        return iter(evs)
 
 
 @unittest.skipIf(capture is None, "python-evdev not available")
@@ -121,6 +125,15 @@ class DeviceResolutionTests(unittest.TestCase):
         self.assertEqual(capture.preset_dir_name(nodes), "AA")
 
 
+def _scripted_select(*returns):
+    """A select.select stand-in that yields each of ``returns`` in turn, repeating
+    the last forever — so a chord drain's follow-up selects are deterministic."""
+    seq = list(returns)
+    def _sel(r, w, x, t=None):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+    return _sel
+
+
 @unittest.skipIf(capture is None, "python-evdev not available")
 class NextPressTests(unittest.TestCase):
     def test_timeout_returns_none(self):
@@ -131,14 +144,54 @@ class NextPressTests(unittest.TestCase):
         finally:
             capture.select.select = saved
 
-    def test_returns_first_real_press(self):
+    def test_returns_first_real_press_as_single_key_chord(self):
         node = _FakeNode(7, events=[_ev(ecodes.EV_KEY, ecodes.KEY_A, 1)])
         saved = capture.select.select
-        capture.select.select = lambda r, w, x, t=None: ([node.fd], [], [])
+        # wake once with the press, then the drain's next select times out (no chord)
+        capture.select.select = _scripted_select(([node.fd], [], []), ([], [], []))
         try:
-            p = capture.next_press([node])
-            self.assertIsNotNone(p)
-            self.assertEqual(p["code"], ecodes.KEY_A)
+            chord = capture.next_press([node])
+            self.assertEqual([p["code"] for p in chord], [ecodes.KEY_A])
+        finally:
+            capture.select.select = saved
+
+    def test_chord_button_captures_every_key(self):
+        # a Naga side button that emits Ctrl+1 in one read() batch -> both keys, in order
+        node = _FakeNode(7, events=[_ev(ecodes.EV_KEY, ecodes.KEY_LEFTCTRL, 1),
+                                    _ev(ecodes.EV_KEY, ecodes.KEY_1, 1)])
+        saved = capture.select.select
+        capture.select.select = _scripted_select(([node.fd], [], []), ([], [], []))
+        try:
+            chord = capture.next_press([node])
+            self.assertEqual([p["code"] for p in chord],
+                             [ecodes.KEY_LEFTCTRL, ecodes.KEY_1])
+        finally:
+            capture.select.select = saved
+
+    def test_release_ends_the_chord_early(self):
+        # Ctrl down, 1 down, 1 up (release) all in one batch -> the up stops collection
+        node = _FakeNode(7, events=[_ev(ecodes.EV_KEY, ecodes.KEY_LEFTCTRL, 1),
+                                    _ev(ecodes.EV_KEY, ecodes.KEY_1, 1),
+                                    _ev(ecodes.EV_KEY, ecodes.KEY_1, 0)])
+        saved = capture.select.select
+        capture.select.select = _scripted_select(([node.fd], [], []))  # no 2nd select needed
+        try:
+            chord = capture.next_press([node])
+            self.assertEqual([p["code"] for p in chord],
+                             [ecodes.KEY_LEFTCTRL, ecodes.KEY_1])
+        finally:
+            capture.select.select = saved
+
+    def test_autorepeat_and_dupes_dropped_from_chord(self):
+        node = _FakeNode(7, events=[_ev(ecodes.EV_KEY, ecodes.KEY_LEFTCTRL, 1),
+                                    _ev(ecodes.EV_KEY, ecodes.KEY_LEFTCTRL, 2),  # autorepeat
+                                    _ev(ecodes.EV_KEY, ecodes.KEY_1, 1)])
+        saved = capture.select.select
+        capture.select.select = _scripted_select(([node.fd], [], []), ([], [], []))
+        try:
+            chord = capture.next_press([node])
+            self.assertEqual([p["code"] for p in chord],
+                             [ecodes.KEY_LEFTCTRL, ecodes.KEY_1])
         finally:
             capture.select.select = saved
 
@@ -192,6 +245,51 @@ class ReadPressTests(unittest.TestCase):
         finally:
             capture.select.select = saved_sel
             sys.stdin.readline = saved_rl
+
+
+@unittest.skipIf(capture is None, "python-evdev not available")
+class CaptureEntryTests(unittest.TestCase):
+    """The persisted shape: a single key stays a lone dict (captures.json unchanged
+    for existing single-key gear); a chord becomes the list of its keys."""
+
+    def _payload(self, code):
+        return capture.classify_event(_ev(ecodes.EV_KEY, code, 1), _FakeDev())
+
+    def test_single_key_persists_as_a_dict(self):
+        entry = capture.capture_entry([self._payload(ecodes.KEY_A)])
+        self.assertIsInstance(entry, dict)
+        self.assertEqual(entry["code"], ecodes.KEY_A)
+        self.assertIn("origin_hash", entry)
+        self.assertNotIn("name", entry)   # display-only fields are dropped
+
+    def test_lone_dict_is_tolerated(self):
+        entry = capture.capture_entry(self._payload(ecodes.KEY_A))
+        self.assertEqual(entry["code"], ecodes.KEY_A)
+
+    def test_chord_persists_as_ordered_list(self):
+        entry = capture.capture_entry([self._payload(ecodes.KEY_LEFTCTRL),
+                                       self._payload(ecodes.KEY_1)])
+        self.assertIsInstance(entry, list)
+        self.assertEqual([e["code"] for e in entry],
+                         [ecodes.KEY_LEFTCTRL, ecodes.KEY_1])
+
+
+@unittest.skipIf(capture is None, "python-evdev not available")
+class ReadPressChordTests(unittest.TestCase):
+    def test_event_path_returns_a_chord(self):
+        import sys
+        node = _FakeNode(7, events=[_ev(ecodes.EV_KEY, ecodes.KEY_LEFTCTRL, 1),
+                                    _ev(ecodes.EV_KEY, ecodes.KEY_1, 1)])
+        saved = capture.select.select
+        # device ready (not stdin) once, then the drain's select times out
+        capture.select.select = _scripted_select(([node.fd], [], []), ([], [], []))
+        try:
+            kind, chord = capture.read_press({node.fd: node})
+            self.assertEqual(kind, "event")
+            self.assertEqual([p["code"] for p in chord],
+                             [ecodes.KEY_LEFTCTRL, ecodes.KEY_1])
+        finally:
+            capture.select.select = saved
 
 
 if __name__ == "__main__":

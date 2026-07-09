@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """KEYZER capture — learn what each physical key on your Razer gear emits.
 
-Run this ON the machine with the hardware, as a user who can read /dev/input
-(your normal desktop login usually can; otherwise add yourself to the ``input``
-group and log back in — see the message printed if access is denied).
+Run this ON the machine with the hardware, as a user who can read the Razer
+/dev/input nodes (install.sh sets up a vendor-scoped udev rule for exactly
+that — see the message printed if access is denied).
 
 For every hotspot defined in ``layouts.json`` it asks you to press the matching
 physical key, then records the evdev event it sees — the ``(type, code)`` plus an
@@ -175,8 +175,10 @@ def _gather_chord(fd_to_dev, ready_fds, window: float = CHORD_WINDOW):
             except (BlockingIOError, OSError):   # a node unplugged mid-capture must
                 continue                         # not kill the whole session
             for ev in events:
-                if ev.type == ecodes.EV_KEY and ev.value == 0:   # a release: chord done
-                    if chord:
+                if ev.type == ecodes.EV_KEY and ev.value == 0:
+                    # a release ends the chord — but only of a key IN it; the user
+                    # letting go of some unrelated held key must not truncate it
+                    if (ecodes.EV_KEY, ev.code) in seen:
                         return chord
                     continue
                 payload = classify_event(ev, dev)
@@ -334,6 +336,13 @@ def capture_device(dev_id: str, dev_layout: dict, grab: bool, existing: dict) ->
             "usb": usb, "captured": captured}
 
 
+def save_captures(path: Path, result: dict) -> None:
+    """Persist the capture map atomically (via engine.save_json) — a crash
+    mid-write must never corrupt an existing captures.json, since a corrupt one
+    loads as {} and every recorded key would be lost."""
+    engine.save_json(path, result, indent=2)
+
+
 def _free_devices() -> None:
     """input-remapper exclusively grabs the devices it's injecting on, which
     starves our reads (keys leak to other windows and capture sees nothing). Stop
@@ -360,7 +369,7 @@ def main() -> int:
                     help="don't grab the device exclusively while capturing")
     args = ap.parse_args()
 
-    layouts = json.loads((REPO / "layouts.json").read_text())
+    layouts = engine.load_layouts(REPO / "layouts.json")
     devices = {k: v for k, v in layouts.items() if not k.startswith("_")}
     if args.device != "all":
         if args.device not in devices:
@@ -370,9 +379,9 @@ def main() -> int:
     if not evdev.list_devices():
         sys.exit(
             "No input devices are readable — KEYZER can't see your hardware.\n"
-            "  Add yourself to the 'input' group and log back in:\n"
-            "      sudo usermod -aG input \"$USER\"\n"
-            "  (then re-login). Running this whole script under sudo also works.")
+            "  Run ./install.sh to install the Razer udev rule, then replug the\n"
+            "  device. (Adding yourself to the 'input' group also works, but\n"
+            "  grants every process access to every keyboard — the rule is safer.)")
 
     _free_devices()
     existing = {}
@@ -391,8 +400,7 @@ def main() -> int:
 
     result = {"_comment": "Hardware-specific evdev codes per hotspot, recorded by "
                           "capture.py. Safe to delete and re-record.", **result}
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    save_captures(args.output, result)
 
     total = sum(len(v.get("captured", {})) for v in result.values()
                 if isinstance(v, dict))

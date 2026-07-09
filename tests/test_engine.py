@@ -825,5 +825,109 @@ class PointerHijackInBuildPresetTests(unittest.TestCase):
         self.assertEqual(mappings[0]["output_symbol"], "BTN_LEFT")
 
 
+class PresetPathConfinementTests(unittest.TestCase):
+    """preset_path() must never escape the presets directory, whatever the
+    device name — a malicious USB device can advertise any name it likes."""
+
+    def _base(self) -> Path:
+        return (engine._ir_config_dir() / "presets").resolve()
+
+    def test_dotdot_device_name_stays_inside_presets(self):
+        p = engine.preset_path("..", "keyzer-x-abc123").resolve()
+        self.assertTrue(p.is_relative_to(self._base()))
+
+    def test_dot_and_empty_device_names_get_their_own_folder(self):
+        # '.' and '' would collapse into the presets dir itself — a preset file
+        # must always live one level down, in a per-device folder.
+        for name in (".", ""):
+            p = engine.preset_path(name, "keyzer-x-abc123")
+            self.assertEqual(p.resolve().parent.parent, self._base(),
+                             f"device name {name!r} escaped its folder: {p}")
+
+    def test_normal_device_names_unchanged(self):
+        p = engine.preset_path("Razer Naga Pro", "keyzer-gaming-abc123")
+        self.assertEqual(p.parent.name, "Razer Naga Pro")
+
+
+class ResolveKeyTests(unittest.TestCase):
+    """resolve_key(): exact match, then the ' 2' second-unit suffix — never a
+    bare prefix match onto a different product."""
+
+    def test_exact_match_wins(self):
+        self.assertEqual(
+            engine.resolve_key("Razer Naga Pro", ["Razer Naga Pro", "Razer Naga Pro 2"]),
+            "Razer Naga Pro")
+
+    def test_numbered_second_unit_still_matches(self):
+        self.assertEqual(engine.resolve_key("Razer Naga Pro", ["Razer Naga Pro 2"]),
+                         "Razer Naga Pro 2")
+
+    def test_no_prefix_match_onto_a_different_device(self):
+        # 'Razer Naga' must NOT resolve to 'Razer Naga Pro' — that's a different
+        # product; fall back to the captured name and let the daemon decide.
+        self.assertEqual(engine.resolve_key("Razer Naga", ["Razer Naga Pro"]),
+                         "Razer Naga")
+
+
+class LiteralPlusTests(unittest.TestCase):
+    """The '+' key itself vs '+' the chord delimiter."""
+
+    def test_lone_plus_is_the_plus_key(self):
+        self.assertEqual(engine.output("+"), ("keyboard", "plus"))
+
+    def test_trailing_plus_in_chord_is_the_plus_key(self):
+        self.assertEqual(engine.output("Ctrl++"), ("keyboard", "Control_L+plus"))
+
+    def test_stray_plus_gets_a_helpful_error(self):
+        with self.assertRaises(engine.Untranslatable) as cm:
+            engine.output("W++X")
+        self.assertIn("plus", str(cm.exception))
+
+
+class SaveJsonDurabilityTests(unittest.TestCase):
+    def test_save_json_fsyncs_before_replace(self):
+        # os.replace is atomic against crashes, but without an fsync a power
+        # loss can still land an empty file (delayed allocation).
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch("engine.os.fsync", wraps=os.fsync) as fs:
+            engine.save_json(Path(td) / "x.json", {"a": 1})
+            fs.assert_called()
+
+
+class LoadLayoutsTests(unittest.TestCase):
+    """load_layouts(): a corrupt/missing layouts.json must exit with a clear
+    message, not a raw JSONDecodeError traceback at startup."""
+
+    def test_corrupt_json_exits_with_clear_message(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "layouts.json"
+            p.write_text("{ nope")
+            with self.assertRaises(SystemExit) as cm:
+                engine.load_layouts(p)
+            self.assertIn("layouts.json", str(cm.exception))
+
+    def test_missing_file_exits_cleanly(self):
+        with tempfile.TemporaryDirectory() as td:
+            with self.assertRaises(SystemExit):
+                engine.load_layouts(Path(td) / "layouts.json")
+
+    def test_non_object_top_level_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "layouts.json"
+            p.write_text("[1, 2]")
+            with self.assertRaises(SystemExit):
+                engine.load_layouts(p)
+
+    def test_valid_layouts_parse(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "layouts.json"
+            p.write_text('{"naga": {"views": {}}}')
+            self.assertEqual(engine.load_layouts(p), {"naga": {"views": {}}})
+
+    def test_repo_layouts_load(self):
+        # the bundled file must always pass its own guard
+        self.assertIn("tartarus", engine.load_layouts())
+
+
 if __name__ == "__main__":
     unittest.main()

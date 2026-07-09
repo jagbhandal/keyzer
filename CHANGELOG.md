@@ -23,7 +23,35 @@ first release.
 - Quality gates: a unit-test suite and an offscreen render gate covering every UI
   state (`tools/check.sh`), plus a UAT guide.
 
+### Security
+- `install.sh` now grants Razer input access via a vendor-scoped udev rule
+  (`packaging/70-keyzer.rules`) instead of adding the user to the `input` group,
+  which let every process running as the user read every keyboard.
+- A device advertising a pathological name (`..`, `.`, empty) can no longer
+  place its preset file outside the input-remapper presets directory.
+
 ### Fixed
+- A corrupt or missing `layouts.json` now exits with a clear one-line message
+  instead of a raw JSON traceback at startup (app and `capture.py`).
+- `capture.py` writes `captures.json` atomically — a crash mid-write can no
+  longer corrupt the whole capture map (which loads as empty when corrupt).
+- `save_json` fsyncs before its atomic rename, so a power loss right after a
+  save can't leave a zero-length profiles/captures/config file.
+- A captured device name no longer prefix-matches a *different* product's
+  input-remapper group (`Razer Naga` vs `Razer Naga Pro`); only the ` 2`
+  second-unit suffix is accepted.
+- The `+` key is bindable: a lone `+` or trailing `++` (as in `Ctrl++`) now
+  translates to the `plus` keysym, and a mid-chord stray `+` gets a helpful
+  error instead of `unknown key(s): ,`.
+- Releasing an unrelated held key during calibration no longer truncates a
+  chord capture mid-gather.
+- Listen mode turns itself off when keyboard focus is stolen (e.g. clicking
+  into a text field) instead of looking live while capturing nothing.
+- The footer's "Applying…" indicator now tracks overlapping applies with a
+  counter, so the first to finish no longer clears it while others run.
+- The desktop entry's `Exec` path is quoted (repo paths with spaces work), and
+  `install.sh` no longer aborts mid-run when its prompts read EOF
+  (non-interactive runs).
 - Keysym bindings were silently dropped by the input-remapper daemon when
   `xmodmap.json` was missing, so keys kept emitting their hardware defaults.
   KEYZER now ensures that file exists before applying.
@@ -40,4 +68,4 @@ first release.
 - Binding applies live in a single step instead of two.
 - Adopted the "Neon" visual direction.
 - Documented the system dependencies (`x11-xserver-utils`, `python3-evdev`, and
-  `input`-group membership) in `install.sh` and `requirements.txt`.
+  the Razer udev rule) in `install.sh` and `requirements.txt`.

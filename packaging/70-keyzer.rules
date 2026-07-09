@@ -1,0 +1,9 @@
+# KEYZER — let the logged-in user read Razer input devices for key capture.
+#
+# Scoped to Razer's USB vendor id (1532) via a dynamic ACL ('uaccess', granted
+# by systemd-logind to the active seat), instead of the blanket 'input' group —
+# which would let every process running as the user read every keyboard.
+#
+# Installed by install.sh to /etc/udev/rules.d/70-keyzer.rules. The number must
+# stay below 73 so 73-seat-late.rules still processes the uaccess tag.
+SUBSYSTEM=="input", ATTRS{idVendor}=="1532", TAG+="uaccess"

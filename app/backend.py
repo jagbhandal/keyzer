@@ -283,7 +283,7 @@ class Backend(QObject):
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        data = json.loads((REPO / "layouts.json").read_text())
+        data = engine.load_layouts(REPO / "layouts.json")
         self._layouts = _normalize_layouts({k: v for k, v in data.items()
                                             if not k.startswith("_")})
         self._dev_totals = {dev: sum(len(v["keys"]) for v in lay["views"].values())
@@ -639,7 +639,7 @@ class Backend(QObject):
         if not nodes:
             return {"ok": False,
                     "error": "Device not found or /dev/input isn't readable — plug it in, "
-                             "or add yourself to the 'input' group and log back in."}
+                             "or run install.sh (Razer udev rule) and replug."}
         try:
             worker = _CaptureWorker(dev, nodes, name, self._layouts[dev].get("usb", ""),
                                     sorted({d.name for d in nodes}), parent=self)  # parented: no GC mid-run

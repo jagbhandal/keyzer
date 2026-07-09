@@ -171,7 +171,8 @@ Rectangle {
         syncWheelToLook()   // the disclosed wheel must show the seeded look's colour, not the default
     }
     property string dirtyText: "All changes saved"
-    property bool applying: false   // an Apply is running on the worker thread
+    property int applying: 0        // Applies in flight on the worker thread (they
+                                    // can overlap, so a bool would clear too early)
     property var applyResult: null          // last Apply-to-hardware report
     property string compareProfile: ""      // profile-diff: compare the active profile against this one
     readonly property var applyHealth: {    // honest footer numbers from the last apply
@@ -257,7 +258,7 @@ Rectangle {
         if (mode === root.thumbMode) return
         backend.setThumbMode(root.curProfile, root.curDev, mode)
         root.thumbMode = mode
-        root.applying = true
+        root.applying++
         backend.applyToHardware(root.curProfile, root.curDev, "thumb")   // only this device changed
         root.showToast(mode === "4way" ? "Thumb: 4-way — smooth movement, diagonals auto"
                                        : "Thumb: 8-way — all 8 directions bindable")
@@ -315,7 +316,7 @@ Rectangle {
         markDirty()
         // set AND push live, off the GUI thread (tag=selKey so the result handler can
         // tell if THIS bind was dropped). Optimistic toast now; problems surface on apply.
-        root.applying = true
+        root.applying++
         backend.applyToHardware(curProfile, curDev, selKey)
         if (root.bindLayer === "shift" && root.holdKey === "")
             showToast(selKey.replace(/_/g, " ") + " → " + v + "  · set a hold key to activate")
@@ -339,7 +340,7 @@ Rectangle {
         listening = false
         backend.clearBinding(curProfile, curDev, selKey, root.bindLayer)
         capValue = ""; markDirty()
-        root.applying = true
+        root.applying++
         backend.applyToHardware(curProfile, curDev, selKey)   // async; result -> onApplyFinished
         showToast("Cleared")
     }
@@ -490,7 +491,7 @@ Rectangle {
     Timer {
         id: applyTimer; interval: 60
         // a full-profile apply (tag=""); the result lands in onApplyFinished
-        onTriggered: { root.applying = true; backend.applyToHardware(root.curProfile, "", "") }
+        onTriggered: { root.applying++; backend.applyToHardware(root.curProfile, "", "") }
     }
     Timer { running: root.lighting; interval: 220; repeat: true; onTriggered: root.litStep++ }
 
@@ -505,7 +506,7 @@ Rectangle {
             if (root.lighting) backend.requestLightingDevices()
         }
         function onApplyFinished(report, tag) {
-            root.applying = false
+            root.applying = Math.max(0, root.applying - 1)
             if (tag !== "") {                        // a per-bind apply (applyBinding/clearBinding)
                 root.mergeApplyResult(report)        // keep the footer health current
                 var warn = root.bindWarning(report, tag)   // did THIS bind get dropped server-side?
@@ -1959,6 +1960,10 @@ Rectangle {
     Item {
         id: keyCatcher
         focus: false
+        // Listen only works while this item has focus — if something steals it
+        // (e.g. clicking into a text field), stop listening rather than leaving
+        // a live-looking Listen button that captures nothing.
+        onActiveFocusChanged: if (!activeFocus) root.listening = false
         Keys.onPressed: function(event) {
             if (!root.listening) return
             event.accepted = true

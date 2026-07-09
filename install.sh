@@ -23,12 +23,16 @@ else
   exit 1
 fi
 
-# Capturing key codes reads /dev/input, which requires the 'input' group.
-say "Adding you to the 'input' group (needed to capture key codes)"
-sudo gpasswd -a "$USER" input || true
-echo "   (log out and back in for the group change to take effect)"
+# Capturing key codes reads the Razer /dev/input nodes. A vendor-scoped udev
+# rule grants the logged-in user access to Razer devices only — unlike the
+# blanket 'input' group, which would let every process read every keyboard.
+say "Installing udev rule for Razer input access (no 'input' group needed)"
+sudo install -m 0644 "$HERE/packaging/70-keyzer.rules" /etc/udev/rules.d/70-keyzer.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=input
+echo "   (replug your Razer device if capture can't see it)"
 
-read -r -p $'\nInstall OpenRazer for Chroma lighting? (optional) [y/N] ' ans
+read -r -p $'\nInstall OpenRazer for Chroma lighting? (optional) [y/N] ' ans || ans=N
 if [[ "${ans:-N}" =~ ^[Yy] ]]; then
   say "Installing OpenRazer"
   sudo add-apt-repository -y ppa:openrazer/stable || true
@@ -38,7 +42,7 @@ if [[ "${ans:-N}" =~ ^[Yy] ]]; then
   echo "   (log out and back in for the plugdev group to take effect)"
 fi
 
-read -r -p $'\nAdd KEYZER to your application menu? [Y/n] ' menu
+read -r -p $'\nAdd KEYZER to your application menu? [Y/n] ' menu || menu=n
 if [[ ! "${menu:-Y}" =~ ^[Nn] ]]; then
   say "Installing launcher, icon and desktop entry (per-user, no root)"
   mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" \
@@ -51,7 +55,7 @@ Type=Application
 Name=KEYZER
 GenericName=Razer Key Remapper
 Comment=Visual key remapping for Razer peripherals
-Exec=$HERE/keyzer
+Exec="$HERE/keyzer"
 Icon=keyzer
 Terminal=false
 Categories=Utility;Settings;HardwareSettings;

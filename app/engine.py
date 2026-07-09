@@ -38,11 +38,13 @@ DEFAULT_CAPTURES = Path(__file__).resolve().parent.parent / "captures.default.js
 
 
 def save_json(path: Path, data, *, indent: int = 2) -> None:
-    """Write JSON atomically (temp file + os.replace) so a crash mid-write can't
-    corrupt the file."""
+    """Write JSON atomically (temp file + fsync + os.replace) so neither a crash
+    mid-write nor a power loss right after can corrupt the file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=indent) + "\n")
+    with open(tmp, "rb") as f:   # without the fsync, delayed allocation can
+        os.fsync(f.fileno())     # leave a zero-length file after power loss
     os.replace(tmp, path)
 
 
@@ -148,6 +150,9 @@ def output(value: str) -> tuple[str, str]:
         raise Untranslatable("no binding")
     if v.lower() in _UNSUPPORTED:
         raise Untranslatable(_UNSUPPORTED[v.lower()])
+    # The '+' key vs '+' the chord delimiter: a lone '+' or a trailing '++'
+    # (e.g. "Ctrl++") means the plus key — splitting would yield empty tokens.
+    v = re.sub(r"(^|\+)\+$", r"\1plus", v)
 
     combo = re.fullmatch(r"[cC]\+([A-Za-z0-9])", v)  # prototype "C+C" = Ctrl+C
     if combo:
@@ -158,6 +163,8 @@ def output(value: str) -> tuple[str, str]:
         symbol = "+".join(_translate_token(t) for t in v.split("+"))
 
     tokens = symbol.split("+")
+    if "" in tokens:   # a mid-chord '+' key, e.g. "W++X" — only lone/trailing work
+        raise Untranslatable("stray '+' — write the + key as 'plus' (e.g. Ctrl+plus)")
     unknown = [t for t in tokens if not _valid_token(t)]
     if unknown:
         raise Untranslatable(f"unknown key(s): {', '.join(unknown)}")
@@ -182,7 +189,10 @@ def _ir_config_dir() -> Path:
 
 
 def _sanitize(name: str) -> str:
-    return re.sub(r'[/\\?%*:|"<>]', "_", name)  # matches input-remapper paths.py
+    s = re.sub(r'[/\\?%*:|"<>]', "_", name)  # matches input-remapper paths.py
+    # '.'/'..'/'' would escape or collapse the presets dir (a USB device can
+    # advertise any name); no real device is called that, so pin them safely.
+    return s if s not in ("", ".", "..") else "device"
 
 
 def preset_path(device_name: str, preset: str) -> Path:
@@ -415,12 +425,14 @@ def device_keys() -> list[str]:
 
 def resolve_key(device_name: str, keys: list[str] | None = None) -> str:
     """The --device group key for a preset folder name (usually identical; a
-    second identical unit gets a ' 2' suffix)."""
+    second identical unit gets a ' 2' suffix). Only that numeric suffix may
+    differ — a bare prefix match would resolve 'Razer Naga' onto the distinct
+    product 'Razer Naga Pro'."""
     keys = device_keys() if keys is None else keys
     if device_name in keys:
         return device_name
     for k in keys:
-        if k.startswith(device_name):
+        if re.fullmatch(re.escape(device_name) + r" \d+", k):
             return k
     return device_name  # fall back; the daemon may still resolve it
 
@@ -522,6 +534,22 @@ def clear_autoload(device_key: str | None = None) -> None:
             removed = True
     if removed:
         save_json(cfg, data, indent=4)
+
+
+def load_layouts(path: Path = _LAYOUTS) -> dict:
+    """Parse layouts.json, exiting with a clear one-line message when the file
+    is missing or corrupt. Geometry is unrecoverable, so startup can't proceed —
+    but the user should see what to fix, not a JSONDecodeError traceback."""
+    try:
+        data = json.loads(path.read_text())
+    except OSError as exc:
+        raise SystemExit(f"KEYZER: can't read {path.name}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"KEYZER: {path.name} isn't valid JSON ({exc}) — fix it "
+                         f"or restore it (e.g. git checkout {path.name})") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"KEYZER: {path.name} must be a JSON object of devices")
+    return data
 
 
 def load_captures(path: Path = CAPTURES) -> dict:

@@ -18,4 +18,5 @@ evdev>=1.6
 #   - x11-xserver-utils     provides `xmodmap`, which the root daemon needs to
 #                           resolve key names — without it every keysym binding
 #                           is dropped server-side
-#   - membership of the `input` group, to read /dev/input during capture
+#   - the Razer udev rule (packaging/70-keyzer.rules), so capture can read the
+#     Razer /dev/input nodes without blanket `input`-group access

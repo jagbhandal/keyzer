@@ -292,5 +292,60 @@ class ReadPressChordTests(unittest.TestCase):
             capture.select.select = saved
 
 
+@unittest.skipIf(capture is None, "python-evdev not available")
+class GatherChordReleaseTests(unittest.TestCase):
+    """_gather_chord(): only a release of a key IN the chord ends it — a user
+    releasing some unrelated, previously-held key must not truncate a chord."""
+
+    def _dev(self, events):
+        return SimpleNamespace(
+            name="Razer Test Device", path="/dev/input/event9",
+            capabilities=lambda absinfo=False: {1: [30, 31, 32]},
+            read=lambda: iter(events))
+
+    def test_unrelated_release_does_not_truncate_chord(self):
+        events = [_ev(ecodes.EV_KEY, ecodes.KEY_LEFTCTRL, 1),
+                  _ev(ecodes.EV_KEY, ecodes.KEY_LEFTSHIFT, 0),   # not in the chord
+                  _ev(ecodes.EV_KEY, ecodes.KEY_1, 1)]
+        chord = capture._gather_chord({7: self._dev(events)}, [7], window=0)
+        self.assertEqual([p["code"] for p in chord],
+                         [ecodes.KEY_LEFTCTRL, ecodes.KEY_1])
+
+    def test_release_of_chord_member_ends_the_chord(self):
+        events = [_ev(ecodes.EV_KEY, ecodes.KEY_A, 1),
+                  _ev(ecodes.EV_KEY, ecodes.KEY_A, 0),           # A released: done
+                  _ev(ecodes.EV_KEY, ecodes.KEY_C, 1)]           # too late
+        chord = capture._gather_chord({7: self._dev(events)}, [7], window=0)
+        self.assertEqual([p["code"] for p in chord], [ecodes.KEY_A])
+
+
+@unittest.skipIf(capture is None, "python-evdev not available")
+class SaveCapturesTests(unittest.TestCase):
+    """The CLI's final write must be atomic — a crash mid-write must never
+    corrupt an existing captures.json (engine falls back to {} on corruption,
+    losing every recorded key)."""
+
+    def test_partial_write_cannot_corrupt_existing_captures(self):
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "captures.json"
+            p.write_text('{"good": 1}')
+            real = Path.write_text
+
+            def half_then_die(self, text, *a, **k):
+                real(self, text[: len(text) // 2], *a, **k)
+                raise OSError("disk full")
+
+            with mock.patch.object(Path, "write_text", half_then_die):
+                with self.assertRaises(OSError):
+                    capture.save_captures(p, {"naga": {"captured": {}}})
+            # the original file survives the failed write, byte-for-byte valid
+            self.assertEqual(json.loads(p.read_text()), {"good": 1})
+
+
 if __name__ == "__main__":
     unittest.main()

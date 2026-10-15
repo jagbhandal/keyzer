@@ -85,8 +85,21 @@ class _LightingTest(unittest.TestCase):
         self.mgr.devices = [dev]
         return dev, fx
 
+    def _tartarus_chroma(self, caps=_ALL, vid=0x1532, pid=0x0208, brightness=50.0):
+        fx = _FakeFx(caps)
+        dev = _FakeDev(
+            "Razer Tartarus Chroma", fx, vid=vid, pid=pid, brightness=brightness
+        )
+        self.mgr.devices = [dev]
+        return dev, fx
+
 
 class MatchTests(_LightingTest):
+    def test_matches_tartarus_chroma_vid_pid(self):
+        self._tartarus_chroma()
+        self.assertIn("tartarus_chroma", lighting.devices())
+
+    # Existing Naga matching behavior remains covered alongside the Chroma path.
     def test_match_prefers_vid_pid(self):
         self._naga(vid=0x1532, pid=0x008F)
         self.assertIn("naga", lighting.devices())

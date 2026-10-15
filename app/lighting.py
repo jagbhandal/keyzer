@@ -7,9 +7,10 @@ imports fine when it's absent, and every public call returns ``{"ok": False,
 ``available()`` (mirrors ``backend.deps.openrazer``) and falls back to the
 in-app glow preview when lighting isn't usable.
 
-Verified against OpenRazer master: Razer Tartarus Pro (1532:0244) and Razer Naga
-Pro (1532:008f) are both supported. Effects offered are filtered per device by
-``device.fx.has(<effect>)`` so we never call something the hardware can't do.
+Verified against OpenRazer master: Razer Tartarus Chroma (1532:0208), Razer
+Tartarus Pro (1532:0244), and Razer Naga Pro (1532:008f) are supported. Effects
+offered are filtered per device by ``device.fx.has(<effect>)`` so we never call
+something the hardware can't do.
 """
 from __future__ import annotations
 
@@ -18,6 +19,9 @@ import importlib.util
 # layouts.json device id -> USB identity (+ name fallback, since the OpenRazer
 # client exposes vid/pid only as private attrs).
 TARGETS = {
+    "tartarus_chroma": {
+        "vid": 0x1532, "pid": 0x0208, "name_substr": "Tartarus Chroma"
+    },
     "tartarus": {"vid": 0x1532, "pid": 0x0244, "name_substr": "Tartarus Pro"},
     "naga":     {"vid": 0x1532, "pid": 0x008F, "name_substr": "Naga Pro"},
 }

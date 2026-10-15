@@ -28,6 +28,9 @@ REPO = Path(__file__).resolve().parent.parent
 
 # Sample lighting shown in demo mode (no OpenRazer) — the panel's expected shape.
 _DEMO_LIGHTING = {"error": None, "devices": [
+    {"id": "tartarus_chroma", "name": "Razer Tartarus Chroma", "brightness": 80,
+     "effects": ["static", "spectrum", "breath_single", "breath_dual",
+                 "breath_random", "none"], "zones": [], "error": None},
     {"id": "tartarus", "name": "Razer Tartarus Pro", "brightness": 80,
      "effects": ["static", "reactive", "none"], "zones": [], "error": None},
     {"id": "naga", "name": "Razer Naga Pro", "brightness": 100,
@@ -223,6 +226,17 @@ def _default_profiles() -> dict:
     """Sample profiles, mirroring the prototype's defaults."""
     return {
         "Gaming": {
+            "tartarus_chroma": {
+                "CHROMA_01": "1", "CHROMA_02": "2", "CHROMA_03": "3",
+                "CHROMA_04": "4", "CHROMA_05": "5",
+                "CHROMA_06": "Tab", "CHROMA_07": "Q", "CHROMA_08": "W",
+                "CHROMA_09": "E", "CHROMA_10": "R",
+                "CHROMA_11": "Caps", "CHROMA_12": "A", "CHROMA_13": "S",
+                "CHROMA_14": "D", "CHROMA_15": "F",
+                "CHROMA_ALT": "Alt", "CHROMA_SPACE": "Space",
+                "CHROMA_TPAD_N": "W", "CHROMA_TPAD_E": "D",
+                "CHROMA_TPAD_S": "S", "CHROMA_TPAD_W": "A",
+            },
             "tartarus": {
                 "TAR_01": "Esc", "TAR_02": "1", "TAR_03": "2", "TAR_04": "3", "TAR_05": "4",
                 "TAR_06": "Tab", "TAR_07": "Q", "TAR_08": "W", "TAR_09": "E", "TAR_10": "R",
@@ -240,11 +254,16 @@ def _default_profiles() -> dict:
             },
         },
         "Work": {
+            "tartarus_chroma": {
+                "CHROMA_06": "Tab", "CHROMA_07": "Copy", "CHROMA_08": "Paste",
+                "CHROMA_09": "Undo", "CHROMA_10": "Save",
+                "CHROMA_ALT": "Alt", "CHROMA_SPACE": "Super",
+            },
             "tartarus": {"TAR_01": "Esc", "TAR_07": "C+C", "TAR_08": "C+V",
                          "TAR_09": "C+Z", "TAR_12": "C+S", "TAR_THUMB": "Super"},
             "naga": {"NAGA_L": "LMB", "NAGA_R": "RMB", "NAGA_01": "Copy", "NAGA_02": "Paste"},
         },
-        "Default": {"tartarus": {}, "naga": {}},
+        "Default": {"tartarus_chroma": {}, "tartarus": {}, "naga": {}},
     }
 
 

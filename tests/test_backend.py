@@ -109,7 +109,9 @@ class ProfileCrudTests(_IsolatedBackendTest):
         self.assertIn("Coding", self.b.profileList)
         self.assertEqual(self.b.activeProfile, "Coding")
         # New profile is seeded with an empty bind map per device.
-        self.assertEqual(set(self.b.bindings["Coding"]), {"tartarus", "naga"})
+        self.assertEqual(
+            set(self.b.bindings["Coding"]), {"tartarus_chroma", "tartarus", "naga"}
+        )
 
     def test_create_trims_whitespace(self):
         r = self.b.createProfile("  Spaced  ")
@@ -285,8 +287,8 @@ class CaptureAndGeometryTests(_IsolatedBackendTest):
 
     def test_capture_summary_totals(self):
         summary = self.b.captureSummary()
-        self.assertEqual(set(summary), {"tartarus", "naga"})
-        for dev in ("tartarus", "naga"):
+        self.assertEqual(set(summary), {"tartarus_chroma", "tartarus", "naga"})
+        for dev in ("tartarus_chroma", "tartarus", "naga"):
             self.assertIn("captured", summary[dev])
             self.assertIn("total", summary[dev])
             self.assertIn("name", summary[dev])
@@ -297,7 +299,9 @@ class CaptureAndGeometryTests(_IsolatedBackendTest):
 
     def test_capture_summary_total_matches_hotspot_count(self):
         summary = self.b.captureSummary()
-        # tartarus: 22 main + 8 thumb = 30 ; naga: 7 top + 12 side = 19.
+        # Chroma: 15 keys + 2 thumb buttons + 8-way pad = 25.
+        # Pro: 22 main + 8 thumb = 30 ; naga: 7 top + 12 side = 19.
+        self.assertEqual(summary["tartarus_chroma"]["total"], 25)
         self.assertEqual(summary["tartarus"]["total"], 30)
         self.assertEqual(summary["naga"]["total"], 19)
 
@@ -308,7 +312,9 @@ class CaptureAndGeometryTests(_IsolatedBackendTest):
     def test_hotspot_ids_collected_from_all_views(self):
         self.assertIn("TAR_01", self.b._hotspot_ids["tartarus"])
         self.assertIn("TAR_TPAD_NE", self.b._hotspot_ids["tartarus"])  # thumb view
+        self.assertIn("CHROMA_TPAD_NE", self.b._hotspot_ids["tartarus_chroma"])
         self.assertIn("NAGA_12", self.b._hotspot_ids["naga"])          # side view
+        self.assertEqual(len(self.b._hotspot_ids["tartarus_chroma"]), 25)
         self.assertEqual(len(self.b._hotspot_ids["tartarus"]), 30)
 
     def test_unavailable_filtering(self):
@@ -317,6 +323,7 @@ class CaptureAndGeometryTests(_IsolatedBackendTest):
         # so nothing is filtered.
         self.assertEqual(self.b._unavailable["naga"], set())
         self.assertEqual(self.b._unavailable["tartarus"], set())
+        self.assertEqual(self.b._unavailable["tartarus_chroma"], set())
 
     def test_combos_collected(self):
         self.assertEqual(
@@ -324,6 +331,17 @@ class CaptureAndGeometryTests(_IsolatedBackendTest):
             {"TAR_TPAD_NE", "TAR_TPAD_SE", "TAR_TPAD_SW", "TAR_TPAD_NW"})
         self.assertEqual(self.b._combos["tartarus"]["TAR_TPAD_NE"],
                          ["TAR_TPAD_N", "TAR_TPAD_E"])
+        self.assertEqual(
+            set(self.b._combos["tartarus_chroma"]),
+            {
+                "CHROMA_TPAD_NE", "CHROMA_TPAD_SE",
+                "CHROMA_TPAD_SW", "CHROMA_TPAD_NW",
+            },
+        )
+        self.assertEqual(
+            self.b._combos["tartarus_chroma"]["CHROMA_TPAD_NE"],
+            ["CHROMA_TPAD_N", "CHROMA_TPAD_E"],
+        )
         self.assertEqual(self.b._combos["naga"], {})
 
 
@@ -369,11 +387,19 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
              engine.device_keys, engine.stop, engine.clear_autoload,
              engine.available) = saved
         self.assertFalse(r["ok"])
-        self.assertEqual({d["dev"] for d in r["devices"]}, {"tartarus", "naga"})
+        self.assertEqual(
+            {d["dev"] for d in r["devices"]},
+            {"tartarus_chroma", "tartarus", "naga"},
+        )
         for d in r["devices"]:
             self.assertFalse(d["ok"])
             self.assertEqual(d["count"], 0)
-            self.assertEqual(d["error"], "no applicable binds")
+            expected = (
+                "not captured — run capture.py"
+                if d["dev"] == "tartarus_chroma"
+                else "no applicable binds"
+            )
+            self.assertEqual(d["error"], expected)
 
     def test_apply_nonexistent_profile(self):
         r = self.b._apply_sync("Ghost", "")
@@ -518,7 +544,9 @@ class PersistenceTests(_IsolatedBackendTest):
             self.b.applyToHardware("OnlyTar", "")
         finally:
             engine.apply_profile = saved
-        self.assertEqual(captured["keys"], {"tartarus", "naga"})  # naga in scope -> revert
+        self.assertEqual(
+            captured["keys"], {"tartarus_chroma", "tartarus", "naga"}
+        )  # every known device is in scope -> revert
 
     def test_apply_drops_reverted_device_from_live(self):
         # naga was live under a prior profile; applying a profile where naga comes
@@ -629,7 +657,10 @@ class DemoModeTests(_IsolatedBackendTest):
         self.assertTrue(r["ok"])
         self.assertIn("demo", r["message"].lower())
         self.assertTrue(all(d["ok"] for d in r["devices"]))
-        self.assertEqual({d["dev"] for d in r["devices"]}, {"tartarus", "naga"})
+        self.assertEqual(
+            {d["dev"] for d in r["devices"]},
+            {"tartarus_chroma", "tartarus", "naga"},
+        )
         self.assertTrue(self.b.liveStatus)        # live set populated
 
     def test_apply_unknown_profile_is_empty(self):
@@ -660,7 +691,10 @@ class DemoModeTests(_IsolatedBackendTest):
         self.b.requestLightingDevices()          # demo -> emits the sample set synchronously
         self.assertEqual(len(got), 1)
         self.assertIsNone(got[0]["error"])
-        self.assertEqual({x["id"] for x in got[0]["devices"]}, {"tartarus", "naga"})
+        self.assertEqual(
+            {x["id"] for x in got[0]["devices"]},
+            {"tartarus_chroma", "tartarus", "naga"},
+        )
 
     def test_light_setters_are_noops_in_demo(self):
         # demo setters must not raise, not touch hardware, and persist nothing

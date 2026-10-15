@@ -66,6 +66,9 @@ def main() -> int:
     view.setResizeMode(QQuickView.ResizeMode.SizeRootObjectToView)
     view.setColor("#0b0b0e")
     view.setTitle("KEYZER")
+    # Unload QML while its context object is still alive so teardown does not
+    # reevaluate bindings against a null ``backend``.
+    app.aboutToQuit.connect(lambda: view.setSource(QUrl()))
     # Render size (the screenshot factory bumps this for crisp marketing shots).
     view.resize(_env_int("KEYZER_W", 1200), _env_int("KEYZER_H", 760))
     view.setSource(QUrl.fromLocalFile(str(APP_DIR / "qml" / "Main.qml")))

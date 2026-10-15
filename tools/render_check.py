@@ -22,6 +22,13 @@ BASE = {"QT_QPA_PLATFORM": "offscreen", "QT_QUICK_BACKEND": "software", "QSG_REN
 
 # Every meaningful state, driven through the KEYZER_* QA env hooks.
 STATES = [
+    ("tartarus chroma / keypad", {"KEYZER_DEV": "tartarus_chroma", "KEYZER_VIEW": "main"}),
+    ("tartarus chroma / selected", {
+        "KEYZER_DEV": "tartarus_chroma", "KEYZER_SELECT": "CHROMA_08"
+    }),
+    ("tartarus chroma / calibrate", {
+        "KEYZER_DEV": "tartarus_chroma", "KEYZER_CALIBRATE": "1"
+    }),
     ("tartarus / keypad", {"KEYZER_DEV": "tartarus", "KEYZER_VIEW": "main"}),
     ("tartarus / keypad + selected", {"KEYZER_DEV": "tartarus", "KEYZER_SELECT": "TAR_08"}),
     ("tartarus / listening (sticky)", {"KEYZER_DEV": "tartarus", "KEYZER_SELECT": "TAR_08", "KEYZER_LISTEN": "1"}),

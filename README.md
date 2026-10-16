@@ -43,6 +43,8 @@
 | Razer Tartarus Pro (keypad) | `1532:0244` | keypad |
 | Razer Naga Pro (mouse) | `1532:008f` | top (L/R click · wheel + tilt · sensitivity) · side (12-button thumb grid) |
 
+The Tartarus Chroma has no bundled default key map yet, so run **Calibrate** once before its bindings will apply (the Tartarus Pro and Naga Pro ship with one).
+
 Adding a device is just an entry in [`layouts.json`](layouts.json) — no code change. PRs welcome for more Razer gear.
 
 ## KEYZER vs Razer Synapse

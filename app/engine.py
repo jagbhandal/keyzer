@@ -552,8 +552,9 @@ def load_layouts(path: Path = _LAYOUTS) -> dict:
     return data
 
 
-def load_captures(path: Path = CAPTURES) -> dict:
+def load_captures(path: Path | None = None) -> dict:
     """User captures if present, else the bundled per-device defaults."""
+    path = path or CAPTURES   # resolved per call, so a redirected CAPTURES applies
     p = path if path.exists() else DEFAULT_CAPTURES
     if not p.exists():
         return {}
@@ -564,8 +565,9 @@ def load_captures(path: Path = CAPTURES) -> dict:
         return {}
 
 
-def captures_origin(path: Path = CAPTURES) -> str:
+def captures_origin(path: Path | None = None) -> str:
     """Where the active capture map comes from: 'user', 'default', or 'none'."""
+    path = path or CAPTURES
     if path.exists():
         return "user"
     if DEFAULT_CAPTURES.exists():
@@ -575,12 +577,13 @@ def captures_origin(path: Path = CAPTURES) -> str:
 
 def record_capture(dev_id: str, device_name: str, hotspot: str, entry: dict,
                    *, usb: str = "", all_names: list[str] | None = None,
-                   path: Path = CAPTURES) -> None:
+                   path: Path | None = None) -> None:
     """Merge one freshly-captured hotspot into the user's captures.json, creating
     the file/device entry as needed. ``entry`` is {type, code, origin_hash,
     analog_threshold?}. Atomic write; an existing valid map keeps all its other
     captured hotspots. If the file exists but is unparseable it's preserved as a
     ``.corrupt`` sidecar (not silently discarded) before a fresh one is written."""
+    path = path or CAPTURES
     data = load_json(path, None)
     if not isinstance(data, dict):
         if path.exists():   # existing but corrupt — keep it instead of clobbering

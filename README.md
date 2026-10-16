@@ -39,8 +39,11 @@
 
 | Device | USB ID | Views |
 |---|---|---|
+| Razer Tartarus Chroma (keypad) | `1532:0208` | keypad |
 | Razer Tartarus Pro (keypad) | `1532:0244` | keypad |
 | Razer Naga Pro (mouse) | `1532:008f` | top (L/R click · wheel + tilt · sensitivity) · side (12-button thumb grid) |
+
+The Tartarus Chroma has no bundled default key map yet, so run **Calibrate** once before its bindings will apply (the Tartarus Pro and Naga Pro ship with one).
 
 Adding a device is just an entry in [`layouts.json`](layouts.json) — no code change. PRs welcome for more Razer gear.
 
@@ -67,7 +70,7 @@ Synapse is more capable:
 | **Visual calibration** | ✅ In-app (click a key, press it) | ✅ N/A (knows its own devices) |
 | **Profile compare / diff** | ✅ Yes — see what changed between profiles | ❌ No |
 | **On-board memory (profile saved on the device)** | ❌ No — applies live through the OS, so it works system-wide | ✅ Yes — travels with the device |
-| **Supported devices** | ⚠️ Tartarus Pro + Naga Pro (more via a JSON entry) | ✅ The full Razer lineup |
+| **Supported devices** | ⚠️ Tartarus Chroma + Tartarus Pro + Naga Pro (more via a JSON entry) | ✅ The full Razer lineup |
 | **Support** | Community / unofficial | Official (Razer) |
 
 **The takeaway:** if you're on Windows, use Synapse. If you're on Linux and want
@@ -171,7 +174,7 @@ You don't need to know anything about input-remapper. The flow:
 
 > **Held, not tapped:** anything joined with `+` is *held down together* for as long as you hold the trigger key, then released — perfect for movement (`W+A`) and modifiers (`Shift`). The same syntax covers shortcuts like `Ctrl+C` — just tap the key and the combo fires once.
 
-**Tartarus thumb pad — 4-way vs 8-way.** The Tartarus Pro's directional thumb pad has a mode toggle in the thumb view. **4-way** binds the four cardinals and lets diagonals happen *automatically* by holding two neighbours at once — so WASD movement stays buttery smooth, with no stutter when you roll between a strafe and straight. It's the one to use for games. **8-way** instead lets you bind all eight directions independently — ideal for mapping eight distinct abilities, at the cost of blended movement. The choice is saved per device, per profile.
+**Tartarus thumb pad — 4-way vs 8-way.** The Tartarus Chroma and Tartarus Pro directional thumb pads have a mode toggle. **4-way** binds the four cardinals and lets diagonals happen *automatically* by holding two neighbours at once — so WASD movement stays buttery smooth, with no stutter when you roll between a strafe and straight. It's the one to use for games. **8-way** instead lets you bind all eight directions independently — ideal for mapping eight distinct abilities, at the cost of blended movement. The choice is saved per device, per profile.
 
 Profiles (e.g. **Gaming** vs **Work**) live in the header menu — switching one applies it live instantly (there's no separate Apply step). **Compare** shows what differs between two profiles at a glance, and **Hypershift** gives each device a hold-key second layer: hold one key and every other key does something else. Export/import to share a setup. Timed/recorded macro sequences aren't in the UI yet; for those you can edit the input-remapper preset directly.
 

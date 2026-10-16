@@ -1,5 +1,45 @@
 {
   "_comment": "KEYZER hotspot geometry per device/view, in image-pixel space. Produced with the prototype's drag-to-align editor. evdev code per key is TBD (see capture.py / ARCHITECTURE.md).",
+  "tartarus_chroma": {
+    "name": "Razer Tartarus Chroma",
+    "kind": "Keypad",
+    "usb": "1532:0208",
+    "views": {
+      "main": {
+        "label": "Keypad",
+        "sub": "15-key grid + thumb controls · click a control to remap",
+        "image": "prototype/assets/tartarus-chroma.svg",
+        "size": [760, 900],
+        "keys": [
+          {"id": "CHROMA_01", "x": 126, "y": 154, "w": 72, "h": 64},
+          {"id": "CHROMA_02", "x": 216, "y": 144, "w": 72, "h": 64},
+          {"id": "CHROMA_03", "x": 306, "y": 138, "w": 72, "h": 64},
+          {"id": "CHROMA_04", "x": 396, "y": 142, "w": 72, "h": 64},
+          {"id": "CHROMA_05", "x": 486, "y": 152, "w": 72, "h": 64},
+          {"id": "CHROMA_06", "x": 126, "y": 246, "w": 72, "h": 64},
+          {"id": "CHROMA_07", "x": 216, "y": 236, "w": 72, "h": 64},
+          {"id": "CHROMA_08", "x": 306, "y": 230, "w": 72, "h": 64},
+          {"id": "CHROMA_09", "x": 396, "y": 234, "w": 72, "h": 64},
+          {"id": "CHROMA_10", "x": 486, "y": 244, "w": 72, "h": 64},
+          {"id": "CHROMA_11", "x": 126, "y": 338, "w": 72, "h": 64},
+          {"id": "CHROMA_12", "x": 216, "y": 328, "w": 72, "h": 64},
+          {"id": "CHROMA_13", "x": 306, "y": 322, "w": 72, "h": 64},
+          {"id": "CHROMA_14", "x": 396, "y": 326, "w": 72, "h": 64},
+          {"id": "CHROMA_15", "x": 486, "y": 336, "w": 72, "h": 64},
+          {"id": "CHROMA_ALT", "x": 536, "y": 456, "w": 104, "h": 60},
+          {"id": "CHROMA_TPAD_N", "x": 554, "y": 532, "w": 64, "h": 58},
+          {"id": "CHROMA_TPAD_NE", "x": 614, "y": 568, "w": 58, "h": 58, "combo": ["CHROMA_TPAD_N", "CHROMA_TPAD_E"]},
+          {"id": "CHROMA_TPAD_E", "x": 632, "y": 626, "w": 64, "h": 58},
+          {"id": "CHROMA_TPAD_SE", "x": 614, "y": 684, "w": 58, "h": 58, "combo": ["CHROMA_TPAD_S", "CHROMA_TPAD_E"]},
+          {"id": "CHROMA_TPAD_S", "x": 554, "y": 720, "w": 64, "h": 58},
+          {"id": "CHROMA_TPAD_SW", "x": 500, "y": 684, "w": 58, "h": 58, "combo": ["CHROMA_TPAD_S", "CHROMA_TPAD_W"]},
+          {"id": "CHROMA_TPAD_W", "x": 476, "y": 626, "w": 64, "h": 58},
+          {"id": "CHROMA_TPAD_NW", "x": 500, "y": 568, "w": 58, "h": 58, "combo": ["CHROMA_TPAD_N", "CHROMA_TPAD_W"]},
+          {"id": "CHROMA_SPACE", "x": 524, "y": 798, "w": 136, "h": 62}
+        ]
+      }
+    }
+  },
   "tartarus": {
     "name": "Razer Tartarus Pro",
     "kind": "Keypad",

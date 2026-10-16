@@ -16,6 +16,9 @@ first release.
 - Multi-profile management with persistence (atomic writes) plus profile
   import/export via the clipboard.
 - True 8-way Tartarus thumb pad, built from input-remapper combination mappings.
+- Razer Tartarus Chroma (`1532:0208`) support: keypad layout, starter profiles and
+  lighting — contributed by [@kamleshkc2002](https://github.com/kamleshkc2002)
+  (GitHub #1).
 - Optional OpenRazer lighting: per-device and per-zone Chroma effects + brightness.
 - A bundled default key map (`captures.default.json`) so a fresh clone works
   before calibration, with a first-run hint when it's in use.

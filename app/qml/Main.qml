@@ -1548,8 +1548,8 @@ Rectangle {
                         }
                     }
                 }
-                Rectangle {   // thumb mode — 4-way (movement) / 8-way (discrete); thumb view only
-                    visible: root.curView === "thumb"
+                Rectangle {   // thumb mode — 4-way (movement) / 8-way (discrete); any view with an 8-way pad
+                    visible: root.viewObj ? root.viewObj.keys.some(function (k) { return !!k.combo }) : false
                     anchors.verticalCenter: parent.verticalCenter
                     width: thumbModeRow.implicitWidth + 6; height: 30; radius: 9
                     color: root.panel2; border.width: 1; border.color: root.lineC

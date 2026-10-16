@@ -794,7 +794,8 @@ class Backend(QObject):
         shift_keys = {d: (self._shiftKeys.get(profile) or {}).get(d, "") for d in binds}
         thumb_modes = {d: (self._thumbModes.get(profile) or {}).get(d, "") for d in binds}
         return {"profile": profile, "binds": binds, "shift": shift,
-                "shift_keys": shift_keys, "thumb_modes": thumb_modes}
+                "shift_keys": shift_keys, "thumb_modes": thumb_modes,
+                "full": prof is not None and not dev}
 
     def _apply_async(self, profile: str, payload: dict, tag: str) -> None:
         # worker thread: do the slow subprocess apply, then hop to the GUI thread to
@@ -825,7 +826,16 @@ class Backend(QObject):
         # Apply always persists: the preset is injected now AND registered with
         # input-remapper's autoload so it survives a reboot/replug. Stop is the
         # only "turn it off" — there is no reset-on-restart mode.
-        report = engine.apply_profile(profile, binds, engine.load_captures(),
+        captures = engine.load_captures()
+        if payload.get("full"):
+            # A full apply covers every device so unbound ones get reverted — but a
+            # device that was never captured can't have been injected, so there is
+            # nothing to revert. Skip it instead of reporting "not captured" as a
+            # failure (anyone without that device would see "Applied with issues").
+            # A single-device apply still reaches the engine and reports it.
+            binds = {d: b for d, b in binds.items()
+                     if (captures.get(d) or {}).get("device_name")}
+        report = engine.apply_profile(profile, binds, captures,
                                       autoload=True, combos=self._combos,
                                       shift=payload["shift"], shift_keys=payload["shift_keys"],
                                       thumb_modes=payload.get("thumb_modes"))

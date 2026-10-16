@@ -387,19 +387,12 @@ class ApplyToHardwareTests(_IsolatedBackendTest):
              engine.device_keys, engine.stop, engine.clear_autoload,
              engine.available) = saved
         self.assertFalse(r["ok"])
-        self.assertEqual(
-            {d["dev"] for d in r["devices"]},
-            {"tartarus_chroma", "tartarus", "naga"},
-        )
+        # tartarus_chroma has no bundled capture, so the full apply skips it.
+        self.assertEqual({d["dev"] for d in r["devices"]}, {"tartarus", "naga"})
         for d in r["devices"]:
             self.assertFalse(d["ok"])
             self.assertEqual(d["count"], 0)
-            expected = (
-                "not captured — run capture.py"
-                if d["dev"] == "tartarus_chroma"
-                else "no applicable binds"
-            )
-            self.assertEqual(d["error"], expected)
+            self.assertEqual(d["error"], "no applicable binds")
 
     def test_apply_nonexistent_profile(self):
         r = self.b._apply_sync("Ghost", "")
@@ -531,8 +524,8 @@ class PersistenceTests(_IsolatedBackendTest):
         self.assertEqual(self.b._live, {})      # back to no live devices
         self.assertEqual(calls, ["clear"])      # and autoload dropped
 
-    def test_full_apply_covers_all_known_devices(self):
-        # A full apply (dev="") must include EVERY known device — even ones the
+    def test_full_apply_covers_all_captured_devices(self):
+        # A full apply (dev="") must include EVERY captured device — even ones the
         # profile leaves unbound — so they get reverted, not left on the old preset.
         self.b.importProfile(json.dumps(
             {"keyzer": 1, "name": "OnlyTar", "binds": {"tartarus": {"TAR_01": "Esc"}}}))
@@ -544,9 +537,25 @@ class PersistenceTests(_IsolatedBackendTest):
             self.b.applyToHardware("OnlyTar", "")
         finally:
             engine.apply_profile = saved
-        self.assertEqual(
-            captured["keys"], {"tartarus_chroma", "tartarus", "naga"}
-        )  # every known device is in scope -> revert
+        self.assertEqual(captured["keys"], {"tartarus", "naga"})  # naga in scope -> revert
+
+    def test_full_apply_skips_never_captured_device(self):
+        # A never-captured device can't be live, so a full apply has nothing to
+        # revert on it and must not report it as an issue ("Applied with issues")...
+        self.assertNotIn("tartarus_chroma", engine.load_captures())
+        captured = {}
+        saved = engine.apply_profile
+        engine.apply_profile = (lambda profile, binds, caps, *, autoload=False, combos=None, **_:
+                                captured.update(keys=set(binds)) or {})
+        try:
+            self.b.applyToHardware("Gaming", "")
+            self.assertNotIn("tartarus_chroma", captured["keys"])
+            # ...but a single-device apply (a bind edit) still reaches the engine, so
+            # the user is told to calibrate it.
+            self.b.applyToHardware("Gaming", "tartarus_chroma")
+            self.assertEqual(captured["keys"], {"tartarus_chroma"})
+        finally:
+            engine.apply_profile = saved
 
     def test_apply_drops_reverted_device_from_live(self):
         # naga was live under a prior profile; applying a profile where naga comes
